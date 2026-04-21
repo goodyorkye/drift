@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime state (generated at runtime, not source)
+queue/
+reports/
+logs/
+
+# Process files
+*.pid
+*.pgid
+
+# Environment
+.env
+.env.local
+
+# Editor
+.DS_Store
+.idea/
+.vscode/settings.json
+*.swp

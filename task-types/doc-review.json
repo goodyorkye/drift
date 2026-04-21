@@ -1,0 +1,14 @@
+{
+  "type": "doc-review",
+  "description": "文档审查：扫描目录，检查正确性/一致性/格式，发现洞察，只读不改",
+  "defaultAgent": "claude",
+  "defaultMaxRetries": 2,
+  "defaultBudgetUsd": 8.0,
+  "phases": [
+    {
+      "name": "execute",
+      "template": "tasks/templates/doc-review.md",
+      "allowedTools": ["Read", "Write", "Glob", "Grep"]
+    }
+  ]
+}
