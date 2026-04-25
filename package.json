@@ -1,14 +1,37 @@
 {
-    "name": "drift-work",
+    "name": "@goodyorkye/drift",
     "version": "0.1.0",
     "description": "Autonomous AI agent task scheduling and execution system",
+    "license": "MIT",
     "type": "module",
+    "keywords": [
+        "agent",
+        "automation",
+        "cli",
+        "scheduler",
+        "task-runner"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/goodyorkye/drift.git"
+    },
+    "bugs": {
+        "url": "https://github.com/goodyorkye/drift/issues"
+    },
+    "homepage": "https://github.com/goodyorkye/drift#readme",
     "bin": {
         "drift": "./dist/cli/index.js"
     },
+    "files": [
+        "dist",
+        "task-types",
+        "LICENSE",
+        "README.md"
+    ],
     "scripts": {
         "dev": "tsx src/cli/index.ts",
         "build": "tsc",
+        "prepack": "npm run build",
         "start": "node dist/cli/index.js",
         "test": "vitest",
         "typecheck": "tsc --noEmit",
@@ -85,5 +108,8 @@
     },
     "engines": {
         "node": ">=20.0.0"
+    },
+    "publishConfig": {
+        "access": "public"
     }
 }

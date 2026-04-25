@@ -1,5 +1,9 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+export const PACKAGE_ROOT = path.resolve(MODULE_DIR, '..');
 export const PROJECT_ROOT = path.resolve(process.env.DRIFT_ROOT ?? process.cwd());
 
 export const WORKSPACE_DIR = path.join(PROJECT_ROOT, 'workspace');
@@ -8,6 +12,7 @@ export const TASKS_DIR = path.join(WORKSPACE_DIR, 'tasks');
 export const SCHEDULES_DIR = path.join(WORKSPACE_DIR, 'schedules');
 export const LOGS_DIR = path.join(WORKSPACE_DIR, 'logs');
 
+export const BUILTIN_TASK_TYPES_DIR = path.join(PACKAGE_ROOT, 'task-types');
 export const TASK_TYPES_DIR = path.join(PROJECT_ROOT, 'task-types');
 
 export function taskRoot(taskId: string): string {

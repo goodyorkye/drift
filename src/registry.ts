@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { TASK_TYPES_DIR } from './paths.js';
+import { BUILTIN_TASK_TYPES_DIR, TASK_TYPES_DIR } from './paths.js';
 import { type TaskType } from './types.js';
 import { pathExists } from './storage.js';
 
@@ -9,6 +9,7 @@ export class Registry {
 
     async load(): Promise<void> {
         this.cache.clear();
+        await ensureProjectTaskTypes();
         const entries = await fs.readdir(TASK_TYPES_DIR, { withFileTypes: true }).catch(() => []);
         await Promise.all(
             entries
@@ -41,4 +42,20 @@ export class Registry {
     private typeDir(typeName: string): string {
         return path.join(TASK_TYPES_DIR, typeName);
     }
+}
+
+async function ensureProjectTaskTypes(): Promise<void> {
+    const entries = await fs.readdir(BUILTIN_TASK_TYPES_DIR, { withFileTypes: true }).catch(() => []);
+    const typeDirs = entries.filter(entry => entry.isDirectory());
+    if (typeDirs.length === 0) return;
+
+    await fs.mkdir(TASK_TYPES_DIR, { recursive: true });
+    await Promise.all(
+        typeDirs.map(async entry => {
+            const source = path.join(BUILTIN_TASK_TYPES_DIR, entry.name);
+            const target = path.join(TASK_TYPES_DIR, entry.name);
+            if (await pathExists(target)) return;
+            await fs.cp(source, target, { recursive: true });
+        }),
+    );
 }
