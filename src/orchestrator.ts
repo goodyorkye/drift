@@ -1,129 +1,281 @@
-import { execa } from 'execa'
-import { FileQueue } from './queue.js'
-import { Registry } from './registry.js'
-import { getRunner } from './runners/index.js'
-import { type TaskInstance, type LogEntry } from './types.js'
-import fs from 'node:fs/promises'
-import path from 'node:path'
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { generateRunId } from './ids.js';
+import { appendSystemLog } from './logging.js';
+import { taskManagedArtifactsDir, taskRunDir, taskWorkdir } from './paths.js';
+import { FileQueue } from './queue.js';
+import { Registry } from './registry.js';
+import { getRunner } from './runners/index.js';
+import {
+    createRunMeta,
+    ensureTaskExecutionDirs,
+    ensureWorkspaceDirs,
+    initializeWorkdir,
+    listQueueTickets,
+    pathExists,
+    readLatestRunResult,
+    readScheduleState,
+    readTask,
+    updateRunMeta,
+    writeRunAgentResult,
+    writeScheduleState,
+    writeTask,
+} from './storage.js';
+import { formatLocalIsoTimestamp } from './time.js';
+import { type ExecutionResult, type QueueStatus, type RunMeta, type RunTrigger, type ScheduleState, type TaskMetadata } from './types.js';
 
 export class Orchestrator {
-  private queue = new FileQueue()
-  private registry = new Registry()
-  private running = false
+    private readonly queue = new FileQueue();
+    private readonly registry = new Registry();
+    private running = false;
 
-  async start(): Promise<void> {
-    await this.queue.ensureDirs()
-    await this.registry.load()
-    this.running = true
+    async start(): Promise<void> {
+        await ensureWorkspaceDirs();
+        await this.queue.ensureDirs();
+        await this.registry.load();
+        await this.recoverOrphanRunningTasks();
 
-    process.on('SIGTERM', () => this.stop())
-    process.on('SIGINT', () => this.stop())
+        this.running = true;
+        process.on('SIGTERM', () => this.stop());
+        process.on('SIGINT', () => this.stop());
 
-    while (this.running) {
-      const hasMore = await this.runOneIteration()
-      if (!hasMore) {
-        await sleep(5_000)
-      }
-    }
-  }
-
-  stop(): void {
-    this.running = false
-  }
-
-  async runOneIteration(): Promise<boolean> {
-    const task = await this.queue.dequeue()
-    if (!task) return false
-
-    const startedAt = Date.now()
-    const type = this.registry.getType(task.type)
-    const phase = this.registry.resolvePhase(type, task)
-
-    await this.log({ event: 'phase_start', taskId: task.id, taskType: task.type, phase: phase.name, agent: task.agent })
-
-    // git checkpoint
-    if (phase.gitCheckpoint && task.targetRepo) {
-      const branch = `drift/${task.id}`
-      await execa('git', ['-C', task.targetRepo, 'checkout', '-b', branch])
-      task.branchName = branch
-    }
-
-    const runner = getRunner(task.agent)
-    const result = await runner.run(phase, task)
-
-    task.lastAttemptedAt = new Date().toISOString()
-
-    if (result.status === 'success') {
-      if (phase.humanReview) {
-        // 等待人工确认后再推进阶段
-        await this.queue.transition(task, 'waiting')
-        await this.log({ event: 'phase_waiting_review', taskId: task.id, phase: phase.name })
-      } else if (this.registry.isLastPhase(type, task)) {
-        // 最后阶段：运行验证命令（如有）
-        if (phase.verificationCmd && task.targetRepo) {
-          const ok = await runVerification(phase.verificationCmd, task.targetRepo)
-          if (!ok) {
-            if (phase.rollbackOnFailure && task.branchName && task.targetRepo) {
-              await rollbackGit(task.targetRepo, task.branchName)
+        while (this.running) {
+            const progressed = await this.runOneIteration();
+            if (!progressed) {
+                await sleep(5_000);
             }
-            await this.handleFailure(task, 'Verification command failed')
-            return true
-          }
         }
-        task.outputFile = result.outputFile
-        await this.queue.transition(task, 'done')
-        await this.log({ event: 'task_done', taskId: task.id, outputFile: task.outputFile, durationMs: Date.now() - startedAt })
-      } else {
-        // 推进到下一阶段，移回 running
-        task.currentPhaseIndex++
-        await this.queue.transition(task, 'running')
-        await this.log({ event: 'phase_done', taskId: task.id, phase: phase.name })
-      }
-    } else {
-      await this.handleFailure(task, result.reason ?? 'Unknown error')
     }
 
-    return true
-  }
-
-  private async handleFailure(task: TaskInstance, reason: string): Promise<void> {
-    task.retryCount++
-    if (task.retryCount >= task.maxRetries) {
-      task.blockedReason = reason
-      await this.queue.transition(task, 'blocked')
-      await this.log({ event: 'task_blocked', taskId: task.id, reason })
-    } else {
-      await this.queue.transition(task, 'pending')
-      await this.log({ event: 'task_retry', taskId: task.id, reason })
+    stop(): void {
+        this.running = false;
     }
-  }
 
-  private async log(entry: Omit<LogEntry, 'ts'>): Promise<void> {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry })
-    const file = path.join('logs', `${today()}.jsonl`)
-    await fs.mkdir('logs', { recursive: true })
-    await fs.appendFile(file, line + '\n')
-  }
-}
+    async runOneIteration(): Promise<boolean> {
+        const task = await this.queue.claimNextPending();
+        if (!task) return false;
 
-async function runVerification(cmd: string, cwd: string): Promise<boolean> {
-  try {
-    await execa(cmd, { shell: true, cwd })
-    return true
-  } catch {
-    return false
-  }
-}
+        await this.executeTask(task);
+        return true;
+    }
 
-async function rollbackGit(repo: string, branch: string): Promise<void> {
-  await execa('git', ['-C', repo, 'checkout', 'main'])
-  await execa('git', ['-C', repo, 'branch', '-D', branch])
+    private async executeTask(task: TaskMetadata): Promise<void> {
+        const startedAt = formatLocalIsoTimestamp();
+        const runId = generateRunId();
+        const runDir = taskRunDir(task.taskId, runId);
+        const trigger = await this.getTrigger(task);
+
+        await ensureTaskExecutionDirs(task.taskId);
+        await initializeWorkdir(task.taskId);
+
+        task.latestRunId = runId;
+        task.lastStartedAt = startedAt;
+        task.status = 'running';
+        task.statusUpdatedAt = startedAt;
+        await writeTask(task);
+
+        const runMeta: RunMeta = {
+            runId,
+            taskId: task.taskId,
+            runner: task.runner,
+            trigger,
+            status: 'running',
+            startedAt,
+            logRefs: {
+                stdout: 'stdout.log',
+                stderr: 'stderr.log',
+            },
+            ...(task.runnerEnv ? { runnerEnv: task.runnerEnv } : {}),
+        };
+        await createRunMeta(runMeta);
+        await appendSystemLog({
+            event: 'task_start',
+            taskId: task.taskId,
+            taskType: task.type,
+            runner: task.runner,
+            runId,
+        });
+
+        const runner = getRunner(task.runner);
+        const execution = await runner.run(task, {
+            runMeta,
+            runDir,
+            registry: this.registry,
+        });
+
+        if (execution.sessionRef) {
+            await updateRunMeta(task.taskId, runId, { sessionRef: execution.sessionRef });
+        }
+
+        await this.finalizeExecution(task, runId, execution.result);
+    }
+
+    private async finalizeExecution(task: TaskMetadata, runId: string, result: ExecutionResult): Promise<void> {
+        const finishedAt = formatLocalIsoTimestamp();
+        const durationMs = task.lastStartedAt ? Date.now() - new Date(task.lastStartedAt).getTime() : undefined;
+
+        await writeRunAgentResult(task.taskId, runId, result);
+
+        const runStatus = result.status === 'error' ? 'failed' : 'finished';
+        await updateRunMeta(task.taskId, runId, {
+            status: runStatus,
+            finishedAt,
+            reason: result.reason,
+            agentResultRef: 'agent-result.json',
+        });
+
+        task.lastFinishedAt = finishedAt;
+
+        if (result.status === 'error') {
+            task.retryCount += 1;
+            if (task.retryCount >= task.maxRetries) {
+                await this.finishTask(task, 'blocked', finishedAt, durationMs, result.reason);
+            } else {
+                await this.finishTask(task, 'pending', finishedAt, durationMs, result.reason);
+            }
+            return;
+        }
+
+        await this.runArtifactIntake(task, runId, result);
+
+        if (result.status === 'success') {
+            await this.finishTask(task, 'done', finishedAt, durationMs);
+        } else if (result.status === 'paused') {
+            await this.finishTask(task, 'paused', finishedAt, durationMs, result.reason);
+        } else {
+            await this.finishTask(task, 'blocked', finishedAt, durationMs, result.reason);
+        }
+    }
+
+    private async finishTask(
+        task: TaskMetadata,
+        status: QueueStatus,
+        finishedAt: string,
+        durationMs?: number,
+        reason?: string,
+    ): Promise<void> {
+        await this.queue.moveTask(task, status, finishedAt);
+        const persisted = await readTask(task.taskId);
+
+        await appendSystemLog({
+            event: 'task_status',
+            taskId: task.taskId,
+            taskType: task.type,
+            runId: persisted.latestRunId ?? undefined,
+            status,
+            reason,
+            durationMs,
+        });
+
+        if (
+            persisted.createdBy.kind === 'schedule' &&
+            persisted.createdBy.sourceId &&
+            (status === 'done' || status === 'paused' || status === 'blocked') &&
+            durationMs !== undefined
+        ) {
+            await this.updateScheduleOutcome(persisted.createdBy.sourceId, status, durationMs, persisted.taskId);
+        } else if (
+            persisted.createdBy.kind === 'schedule' &&
+            persisted.createdBy.sourceId &&
+            (status === 'done' || status === 'paused' || status === 'blocked')
+        ) {
+            await this.updateScheduleOutcome(persisted.createdBy.sourceId, status, undefined, persisted.taskId);
+        }
+    }
+
+    private async runArtifactIntake(task: TaskMetadata, runId: string, result: ExecutionResult): Promise<void> {
+        const refs = 'artifactRefs' in result ? result.artifactRefs ?? [] : [];
+        const intakeRecords: Array<{ sourceRef: string; managedRef: string }> = [];
+
+        for (const ref of refs) {
+            if (!ref || path.isAbsolute(ref)) continue;
+            const root = taskWorkdir(task.taskId);
+            const source = path.resolve(root, ref);
+            const relativeSource = path.relative(root, source);
+            if (relativeSource.startsWith('..') || path.isAbsolute(relativeSource)) continue;
+            if (!(await pathExists(source))) continue;
+
+            const managedRoot = taskManagedArtifactsDir(task.taskId);
+            const target = path.join(managedRoot, runId, relativeSource);
+            await fs.mkdir(path.dirname(target), { recursive: true });
+            const stat = await fs.stat(source);
+            if (stat.isDirectory()) {
+                await fs.cp(source, target, { recursive: true });
+            } else {
+                await fs.copyFile(source, target);
+            }
+            intakeRecords.push({
+                sourceRef: ref,
+                managedRef: path.relative(managedRoot, target).replace(/\\/g, '/'),
+            });
+        }
+
+        await fs.writeFile(path.join(taskRunDir(task.taskId, runId), 'intake.json'), JSON.stringify(intakeRecords, null, 2));
+    }
+
+    private async updateScheduleOutcome(scheduleId: string, status: Exclude<QueueStatus, 'pending' | 'running'>, durationMs?: number, taskId?: string): Promise<void> {
+        const state = await readScheduleState(scheduleId);
+        state.lastTaskId = taskId ?? state.lastTaskId ?? null;
+        state.lastRunStatus = status;
+        state.stats[status] += 1;
+
+        if (durationMs !== undefined) {
+            const completedCount = state.stats.done + state.stats.blocked + state.stats.paused - 1;
+            const currentAvg = state.timing.avgDurationMs ?? 0;
+            state.timing.lastDurationMs = durationMs;
+            state.timing.avgDurationMs =
+                completedCount >= 0 ? Math.round((currentAvg * completedCount + durationMs) / (completedCount + 1)) : durationMs;
+        }
+
+        await writeScheduleState(state);
+    }
+
+    private async getTrigger(task: TaskMetadata): Promise<RunTrigger> {
+        const latest = await readLatestRunResult(task);
+        if (latest?.status === 'paused') return 'resume';
+        if (task.retryCount > 0) return 'retry';
+        return 'initial';
+    }
+
+    private async recoverOrphanRunningTasks(): Promise<void> {
+        const tickets = await listQueueTickets('running');
+        for (const ticket of tickets) {
+            const task = await readTask(ticket.taskId);
+            const runId = task.latestRunId;
+            const now = formatLocalIsoTimestamp();
+            const durationMs = task.lastStartedAt ? Date.now() - new Date(task.lastStartedAt).getTime() : undefined;
+
+            if (runId && (await pathExists(taskRunDir(task.taskId, runId)))) {
+                await updateRunMeta(task.taskId, runId, {
+                    status: 'failed',
+                    finishedAt: now,
+                    reason: 'Recovered orphan running task after orchestrator restart',
+                    agentResultRef: 'agent-result.json',
+                });
+                await writeRunAgentResult(task.taskId, runId, {
+                    status: 'error',
+                    reason: 'Recovered orphan running task after orchestrator restart',
+                });
+            }
+
+            task.lastFinishedAt = now;
+            await this.queue.moveTask(task, 'blocked', now);
+            if (task.createdBy.kind === 'schedule' && task.createdBy.sourceId) {
+                await this.updateScheduleOutcome(task.createdBy.sourceId, 'blocked', durationMs, task.taskId);
+            }
+            await appendSystemLog({
+                event: 'task_recovered',
+                taskId: task.taskId,
+                taskType: task.type,
+                runId: runId ?? undefined,
+                status: 'blocked',
+                reason: 'Recovered orphan running task after orchestrator restart',
+                durationMs,
+            });
+        }
+    }
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
+    return new Promise(resolve => setTimeout(resolve, ms));
 }

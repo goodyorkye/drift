@@ -9,7 +9,7 @@ import { type RunnerContext, type RunnerExecutionOutput } from './base.js';
 import { BaseRunner } from './base.js';
 import { pathExists, readJson } from '../storage.js';
 
-export class ClaudeRunner extends BaseRunner {
+export class CodexRunner extends BaseRunner {
     protected async execute(prompt: string, task: TaskMetadata, context: RunnerContext): Promise<RunnerExecutionOutput> {
         const stdoutPath = path.join(context.runDir, 'stdout.log');
         const stderrPath = path.join(context.runDir, 'stderr.log');
@@ -18,30 +18,14 @@ export class ClaudeRunner extends BaseRunner {
         const stdoutStream = fsSync.createWriteStream(stdoutPath);
         const stderrStream = fsSync.createWriteStream(stderrPath);
 
-        const subprocess = execa(
-            'claude',
-            [
-                '-p',
-                prompt,
-                '--verbose',
-                '--output-format',
-                'stream-json',
-                '--max-turns',
-                '30',
-                '--max-budget-usd',
-                String(task.budgetUsd),
-                '--permission-mode',
-                'bypassPermissions',
-            ],
-            {
-                cwd: taskWorkdir(task.taskId),
-                timeout: task.timeoutMs,
-                stdin: 'ignore',
-                stdout: 'pipe',
-                stderr: 'pipe',
-                env: { ...process.env, ...task.runnerEnv },
-            },
-        );
+        const subprocess = execa('codex', ['exec', '--full-auto', '--skip-git-repo-check', '-'], {
+            cwd: taskWorkdir(task.taskId),
+            input: prompt,
+            timeout: task.timeoutMs,
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: { ...process.env, ...task.runnerEnv },
+        });
 
         subprocess.stdout?.pipe(stdoutStream);
         subprocess.stderr?.pipe(stderrStream);

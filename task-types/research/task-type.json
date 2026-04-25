@@ -1,0 +1,25 @@
+{
+    "type": "research",
+    "label": "调研任务",
+    "description": "调研任务：WebSearch/WebFetch 多源信息收集，产出结构化中文报告",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 1800000,
+    "defaultMaxRetries": 3,
+    "defaultBudgetUsd": 10.0,
+    "runnerEnvPresets": [
+        {
+            "name": "中文简报",
+            "env": {
+                "REPORT_LANGUAGE": "zh-CN",
+                "REPORT_DEPTH": "brief"
+            }
+        },
+        {
+            "name": "英文深度报告",
+            "env": {
+                "REPORT_LANGUAGE": "en",
+                "REPORT_DEPTH": "deep"
+            }
+        }
+    ]
+}

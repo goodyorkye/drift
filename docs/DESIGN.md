@@ -1,452 +1,373 @@
 # drift-work 设计文档
 
-> **项目名**：drift-work  
-> **CLI 命令**：`drift`  
-> **语言**：TypeScript / Node.js
+> 项目名：drift-work  
+> CLI 命令：`drift`  
+> 语言：TypeScript / Node.js
 
 ---
 
 ## 一、项目定位
 
-drift-work 是一个自主 Agent 任务调度执行系统。用户定义任务，系统自动调度分发给 AI Agent（Claude、Codex 等）执行，产出报告或代码变更。
+drift-work 是一个自主 Agent 任务管理系统。用户定义任务，系统负责创建、排队、调度、执行、暂停、恢复、完成、失败等生命周期管理，并保留可追溯的执行记录。
 
-**解决的核心问题**：让 AI Agent 在无人值守的情况下稳定、可靠地消费任务队列，结果可追溯，失败可恢复。
-
-### 设计目标
-
-- **稳定**：状态由系统维护，不依赖 Agent 记忆或 prompt 约定
-- **可扩展**：新任务类型、新 Agent 无需改核心代码
-- **可观测**：结构化日志，执行历史可查询
-- **人机协作**：多阶段任务支持在关键节点暂停等待人工确认
-- **成本可控**：每任务预算上限，失败自动熔断
-
-### 非目标
-
-- 不做 Web UI（CLI 足够）
-- 不做分布式（单机运行）
-- 不引入数据库（文件队列满足当前规模）
+**核心目标**：让 Agent 在无人值守情况下稳定消费任务，同时保持结果可追溯、失败可恢复、系统边界清晰。
 
 ---
 
-## 二、架构概览
+## 二、设计边界
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      drift CLI                               │
-│   task add/list/remove · schedule · start/stop · status     │
-└──────┬───────────────────────────────────────┬──────────────┘
-       │ 写入任务文件                           │ 调度配置 CRUD
-       ▼                                       ▼
-┌──────────────────┐                ┌─────────────────────────┐
-│   queue/         │◄───────────────│      Scheduler          │
-│   pending/       │  定时自动入队   │  (node-cron，独立进程)  │
-│   running/       │                └─────────────────────────┘
-│   done/          │
-│   blocked/       │
-│   waiting/       │  ← 多阶段任务等待人工确认
-└──────┬───────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Orchestrator                              │
-│  取任务 → 加载类型定义 → 合并 phase_overrides               │
-│  → 执行阶段 → 读 result.json → 推进/重试/阻塞              │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ 按 agent 字段分发
-            ┌──────────┼──────────┐
-            ▼          ▼          ▼
-       runners/    runners/   runners/
-       claude.ts   codex.ts   (可扩展)
-            │          │
-            └────┬─────┘
-                 │ 统一 Result Contract
-                 ▼
-        queue/running/{id}.result.json
-        reports/{date}/{type}-{title}.md
-```
+### 1. 系统只做任务管理，不做任务编排
+
+任务管理器不拆解任务内部步骤，不定义 `plan / implement / verify` 之类的系统阶段，也不对具体任务流程做判断。
+
+### 2. 任务内容对系统是黑盒
+
+任务的上下文、输入、执行方式、产物形式都由任务自身定义。对系统来说，任务正文可以是一段文本、一个 Markdown 文件或其他载荷。
+
+### 3. 核心不理解任务业务语义
+
+核心模型不内置 `targetRepo`、`timeRange`、`goal`、`acceptance` 等任务专属字段，也不内置 git 分支、验证命令、回滚等某类任务的执行逻辑。
+
+### 4. 默认无 Phase
+
+`Phase` 不作为核心任务模型的一部分存在。任务内部如何分解与执行，由 Agent 自主决定。
+
+### 5. 系统只关心通用元数据与状态
+
+例如任务 ID、类型、标题、状态、执行器、时间戳、重试次数、预算、运行记录、结果引用等。
+JSON 中的时间字段统一使用当前运行环境时区的 ISO 8601 带偏移格式，例如 `2026-04-25T15:30:45.123+08:00`。
 
 ---
 
-## 三、核心概念
+## 三、设计目标
 
-### 3.1 任务类型（Task Type）
+- 稳定：状态由系统维护，不依赖 Agent 记忆或 prompt 约定
+- 可扩展：新任务类型、新 Agent 不要求修改核心设计
+- 可观测：运行历史、日志、结果、会话引用可追踪
+- 人机协作：支持通用暂停、恢复、放弃，而不是任务内阶段审批
+- 成本可控：每任务预算和重试上限可控
 
-任务类型是**流程定义**，描述一类任务如何执行：分几个阶段、每个阶段用什么模板、允许哪些工具、是否需要人工确认。
+## 四、非目标
 
-类型定义保存在 `task-types/` 目录，**稳定、可复用**，不随具体任务变化。
+- 不做 Web UI
+- 不做分布式
+- 不引入数据库
+- 不做任务 DSL
+- 不做任务内部工作流编排器
 
-### 3.2 任务实例（Task Instance）
+---
 
-任务实例是**执行数据**，描述一个具体任务要做什么。只包含业务数据（目标、描述、约束）和运行时状态（当前阶段、重试次数），不包含流程逻辑。
+## 五、核心对象
 
-### 3.3 阶段（Phase）
+### 1. TaskType
 
-阶段是任务类型内的执行单元。多阶段任务（如功能开发）按顺序逐阶段推进，单阶段任务（如调研）只有一个 execute 阶段。
+任务类别定义，用于描述某类任务的基本信息和默认执行配置。
 
-阶段支持以下控制属性：
+在新设计中，`TaskType` 的职责收敛为“分类 + 默认配置”，而不是任务执行蓝图。
 
-| 属性 | 说明 |
-|------|------|
-| `template` | Prompt 模板路径 |
-| `allowedTools` | 该阶段允许的工具列表 |
-| `humanReview` | 是否在执行后暂停等待人工确认 |
-| `gitCheckpoint` | 是否在执行前创建 git 分支 |
-| `verificationCmd` | 执行后运行的验证命令 |
-| `rollbackOnFailure` | 验证失败是否回滚 git 变更 |
+此外，每个 `TaskType` 可以拥有一套可选 guide 材料，作为类型级补充建议。若存在 guide，则由系统按路径提供给 Agent 作为只读补充材料；具体任务的 `task.md` 优先于类型 guide。
 
-### 3.4 Runner
+任务类型目录约定：
 
-Runner 是 Agent 的适配层。每个 Runner 封装具体 Agent 的 CLI 调用方式，对外提供统一接口，并负责确保 Result Contract（result.json）的存在。
+```text
+task-types/
+  <type>/
+    task-type.json
+    guide/
+      guide.md
+```
 
-### 3.5 Result Contract
+第一版 `TaskType` 建议只保留：
 
-Agent 完成任务后**必须**写入 `queue/running/{id}.result.json`，这是 Orchestrator 判断任务状态的唯一依据：
+- `type`
+- `label`
+- `description`
+- `defaultRunner`
+- `defaultBudgetUsd`
+- `defaultMaxRetries`
+- `defaultTimeoutMs`
+
+### 2. Schedule
+
+定时规则，用于周期性地产生 `TaskInstance`。  
+`Schedule` 不是任务实例本身，也不拥有任务工作目录。
+
+`Schedule` 应作为独立模型存在，负责定义“何时触发”和“触发时如何生成任务”；它不复用 `TaskInstance` 结构。
+
+当 `skipIfActive = true` 时，若同一 `scheduleId` 创建的任务仍处于 `pending / running / paused`，则跳过本次触发。
+
+`scheduleId` 由用户输入或确认，采用 slug 风格命名，只允许小写字母、数字和 `-`。
+
+`schedule.json` 保存定时规则与任务生成规格，建议最小字段包括：`scheduleId`、`type`、`title`、`runner`、`cron`、`skipIfActive`、`enabled`。`cron` 默认按当前运行环境时区解释。
+
+`schedule-state.json` 单独保存运行时观测信息，例如最后一次触发信息、累计状态统计、累计时间统计；第一版可以完整保留这些字段，尚未形成的数据允许为空。时间统计不必等任务结束后才更新，当前已知时长也可以记录。它固定放在 `workspace/schedules/<scheduleId>/schedule-state.json`，这些运行态数据不进入 `schedule.json`。
+
+### 3. TaskInstance
+
+一次具体任务实例。
+
+- 手动任务：由用户直接创建 `TaskInstance`
+- 定时任务：由 `Schedule` 自动创建 `TaskInstance`
+
+`TaskInstance` 只承载任务管理所需的信息：
+
+- 通用元数据
+- 生命周期状态
+- 重试 / 预算 / 时间戳等运行控制信息
+- 轻量执行索引字段
+- 任务原件落点
+
+任务级 canonical metadata 建议落在：
+
+`workspace/tasks/<taskId>/task.json`
+
+其中包含任务基本信息、状态快照以及轻量索引字段；运行时状态真相仍由 `queue/` 目录位置表达。
+
+其中 `runner` 表示该任务实例最终选定的执行 runner，并在创建任务时由用户显式选择。`budgetUsd`、`maxRetries`、`timeoutMs` 等实例级执行控制值也应在创建时从 `TaskType` 默认值或系统默认值固化到 `task.json`；`retryCount` 继续作为运行时累计值存在。
+
+`task.json` 不内嵌完整 `RunRecord[]`；完整 run 历史只通过 `workspace/tasks/<taskId>/runs/` 目录读取，`task.json` 只保留 `latestRunId` 等轻量索引字段。
+
+任务来源建议使用可扩展的 `createdBy` 结构，例如：
 
 ```json
 {
-  "status": "success | blocked | error",
-  "reason": "失败时的原因说明",
-  "outputFile": "reports/2026-04-21/research-xxx.md"
+  "kind": "manual | claude | codex | schedule",
+  "sourceId": "optional"
 }
 ```
 
-Orchestrator 不解析 Agent 的 stdout，只读这个文件。Runner 负责在 Agent 未写入时强制生成一个 error 记录。
+### 4. RunRecord
 
-### 3.6 队列状态机
+一次执行尝试的记录。
 
-```
-pending → running → done
-                  ↘ blocked    (重试次数耗尽)
-                  ↘ pending    (失败但可重试，retry_count++)
-         running → waiting     (humanReview 阶段完成，等待确认)
-         waiting → running     (drift approve <id>)
-```
+- 每次启动 runner 都生成新的 `RunRecord`
+- `resume` 也生成新的 `RunRecord`
+- `runId` 表示执行尝试
+- `sessionRef` 表示 agent 会话
+- 多个 `RunRecord` 可以共享同一个 `sessionRef`
 
 ---
 
-## 四、目录结构
+## 六、生命周期状态
 
+核心状态收敛为：
+
+- `pending`
+- `running`
+- `paused`
+- `done`
+- `blocked`
+
+语义约定：
+
+- `paused`：当前缺少继续执行条件，后续可以恢复
+- `blocked`：任务失败或终止，不再继续自动执行
+
+主要流转：
+
+```text
+pending -> running -> done
+                 -> paused
+                 -> blocked
+
+paused -> pending   (resume)
+paused -> blocked   (abandon)
+done -> pending     (rerun)
+blocked -> pending  (rerun)
 ```
-drift-work/
-├── src/
-│   ├── orchestrator.ts      # 主循环，任务状态机
-│   ├── scheduler.ts         # Cron 调度，独立进程
-│   ├── queue.ts             # 文件队列操作（原子 mv）
-│   ├── registry.ts          # 任务类型注册表
-│   ├── runners/
-│   │   ├── base.ts          # Runner 基类，合约校验
-│   │   ├── claude.ts        # Claude CLI 封装
-│   │   ├── codex.ts         # Codex CLI 封装
-│   │   └── index.ts         # Runner 注册表
-│   ├── cli/
-│   │   ├── index.ts         # drift 命令入口
-│   │   ├── task.ts          # drift task add/list/remove/approve
-│   │   ├── schedule.ts      # drift schedule add/list/enable/disable/run
-│   │   └── process.ts       # drift start/stop/status/logs
-│   └── types.ts             # 全局类型定义
-│
-├── task-types/              # 任务类型定义（JSON，进 git）
-│   ├── research.json
-│   ├── code-review.json
-│   ├── doc-review.json
-│   └── feature-dev.json
-│
-├── tasks/
-│   ├── templates/           # Prompt 模板（Markdown，进 git）
-│   │   ├── research.md
-│   │   ├── code-review.md
-│   │   ├── doc-review.md
-│   │   └── feature-dev/
-│   │       ├── plan.md
-│   │       ├── implement.md
-│   │       └── verify.md
-│   └── scheduled/           # 定时任务模板（JSON，进 git）
-│
-├── queue/                   # 运行时状态（不进 git）
-│   ├── pending/
-│   ├── running/
-│   ├── done/
-│   ├── blocked/
-│   └── waiting/
-│
-├── reports/                 # 产出报告，按日期（不进 git）
-├── logs/                    # JSON Lines 日志（不进 git）
-├── scheduler/
-│   └── schedules.json       # Cron 调度配置（进 git）
-├── docs/
-│   └── DESIGN.md            # 本文件
-├── CLAUDE.md
-├── package.json
-└── tsconfig.json
-```
+
+其中 `not_queued` 是 `task.json` 专属初始状态，用于表示任务已创建但尚未正式入队；它不进入 `queue/` 状态机。用户可通过显式 enqueue 操作将其加入 `pending`。
+
+一句话概括：
+
+- `paused` = 等条件
+- `blocked` = 出故障 / 终止
+- `rerun` = 从头重跑该任务实例
 
 ---
 
-## 五、数据结构
+## 七、任务目录模型
 
-### 5.1 任务类型定义
+每个 `TaskInstance` 使用独立长期目录，任务结束后默认保留，不自动删除。清理策略独立设计。
 
-```typescript
-interface Phase {
-  name: string
-  template: string                 // 相对于项目根的路径
-  allowedTools: string[]
-  humanReview?: boolean            // 执行后暂停等待人工确认
-  gitCheckpoint?: boolean          // 执行前创建 git 分支
-  verificationCmd?: string         // 执行后运行的验证命令
-  rollbackOnFailure?: boolean      // 验证失败时回滚 git 变更
-}
+目录职责如下：
 
-interface TaskType {
-  type: string
-  description: string
-  phases: Phase[]
-  defaultAgent?: string            // 默认 agent，可被实例覆盖
-  defaultMaxRetries?: number
-  defaultBudgetUsd?: number
-}
+```text
+workspace/tasks/<taskId>/
+  spec/
+    task.md
+    ...
+  workdir/
+    ...
+  runs/
+    <runId>/
+      agent-result.json
+      run-meta.json
+      stdout.log
+      stderr.log
+      intake.json
+  managed-artifacts/
+    ...
 ```
 
-示例（`task-types/feature-dev.json`）：
+- `spec/`：任务原件
+- `workdir/`：执行现场
+- `runs/`：单次执行记录
+- `managed-artifacts/`：管理器接管后的正式产物
+
+任务规则：
+
+- `spec/` 下必须存在 `task.md`
+- `task.md` 不约定固定格式，由 Agent 自主理解
+- 任务初始化时，将 `spec/` 原样复制到 `workdir/`
+- 后续 `resume` / 重试继续复用同一个 `workdir/`
+- Agent 在 `workdir/` 中执行，并先读取 `task.md`
+
+定时任务额外拥有 schedule 级别目录：
+
+```text
+workspace/schedules/<scheduleId>/
+  schedule.json
+  schedule-state.json
+  spec/
+    task.md
+    ...
+  shared-state/
+    ...
+```
+
+- `schedule-state.json`：管理器拥有的调度观测状态
+- `shared-state/`：任务业务状态黑盒目录，用于同一 schedule 下多次执行共享状态
+- `shared-state/` 由管理器创建和保留，但不解析其中内容
+- 所有任务执行时，runner 都会注入一个 `shared-state` 绝对路径
+- 对普通任务，`shared-state` 指向该任务自己的长期执行目录
+- 对由 schedule 生成的任务，`shared-state` 指向对应 schedule 的 `shared-state/`
+- Agent 不应把业务状态写回 `spec/` 或 `schedule-state.json`
+
+---
+
+## 八、执行协议
+
+### 1. AgentResult
+
+Agent 负责写任务语义结果，不负责写执行元数据。
+
+第一版 `AgentResult` 最小结构：
 
 ```json
 {
-  "type": "feature-dev",
-  "description": "多阶段功能开发：方案 → 实现 → 验证",
-  "defaultMaxRetries": 1,
-  "defaultBudgetUsd": 20.0,
-  "phases": [
-    {
-      "name": "plan",
-      "template": "tasks/templates/feature-dev/plan.md",
-      "allowedTools": ["Read", "Glob", "Grep", "WebSearch"],
-      "humanReview": true
-    },
-    {
-      "name": "implement",
-      "template": "tasks/templates/feature-dev/implement.md",
-      "allowedTools": ["Read", "Write", "Edit", "Bash(git checkout -b*)", "Bash(npm*)"],
-      "gitCheckpoint": true
-    },
-    {
-      "name": "verify",
-      "template": "tasks/templates/feature-dev/verify.md",
-      "allowedTools": ["Read", "Bash(npm test*)", "Bash(pytest*)"],
-      "verificationCmd": "npm test",
-      "rollbackOnFailure": true
-    }
-  ]
+  "status": "success | paused | blocked",
+  "reason": "可选；paused/blocked 时应填写",
+  "artifactRefs": ["相对路径列表，可选"]
 }
 ```
 
-### 5.2 任务实例
+约定：
 
-```typescript
-interface TaskInstance {
-  // 基本信息
-  id: string                       // task-{timestamp}-{random}
-  type: string                     // 对应 task-types/ 下的类型名
-  agent: string                    // "claude" | "codex" | ...
-  title: string
-  description: string
+- `status = success`：任务已完成
+- `status = paused`：当前缺少继续执行条件
+- `status = blocked`：任务当前不可继续
+- `artifactRefs` 必须是相对 `workdir/` 的相对路径
+- `artifactRefs` 不限制具体文件格式
+- `error` 不由 Agent 主动产出，由 runner / 系统兜底生成
 
-  // 需求分析产出（drift task add 时填入）
-  goal?: string                    // 要达成什么结果
-  constraints?: string[]           // 范围限制
-  acceptance?: string              // 验收标准
+### 2. AgentResult 文件位置
 
-  // 任务特定参数
-  targetRepo?: string              // code-review / feature-dev 用
-  timeRange?: string               // code-review 用，如 "24 hours ago"
+- Agent 固定将结果写入当前工作目录下的 `agent-result.json`
+- 不要求 Agent 直接写 `runs/<runId>/` 下的文件
+- 当前工作目录即任务的 `workdir/`
+- 每次新 run 启动前，runner 先删除旧的 `workdir/agent-result.json`
+- runner 在执行结束后读取、校验并复制到 `runs/<runId>/agent-result.json`
 
-  // Phase 级别覆盖（覆盖类型定义的默认值）
-  phaseOverrides?: Partial<Record<string, Partial<Phase>>>
+### 3. Run Meta
 
-  // 运行时状态（由 Orchestrator 维护，不由用户填写）
-  currentPhaseIndex: number
-  retryCount: number
-  maxRetries: number
-  budgetUsd: number
-  createdAt: string                // ISO 8601
-  lastAttemptedAt?: string
-  outputFile?: string
-  branchName?: string              // feature-dev 创建的分支名
-  blockedReason?: string
-}
-```
+`run-meta.json` 由 runner / 管理器维护，不由 Agent 写入。
 
-### 5.3 调度配置
+职责：
 
-```typescript
-interface Schedule {
-  id: string
-  description: string
-  taskTemplate: string             // 指向 tasks/scheduled/ 下的模板文件
-  cron: string                     // 标准 cron 表达式
-  enabled: boolean
-  lastEnqueuedAt?: string
-}
-```
+- 记录 run 的启动、结束和最终运行状态
+- 记录 `sessionRef`、日志引用、结果引用等执行元数据
 
-### 5.4 日志条目（JSON Lines）
+状态语义与 `AgentResult` 分层：
 
-```typescript
-type LogEvent =
-  | 'task_enqueued'
-  | 'task_start'
-  | 'phase_start'
-  | 'phase_done'
-  | 'phase_waiting_review'
-  | 'task_done'
-  | 'task_retry'
-  | 'task_blocked'
-  | 'task_scheduled'
+- `run-meta.status`：运行状态，例如 `running | finished | failed`
+- `AgentResult.status`：任务结果状态，例如 `success | paused | blocked`
 
-interface LogEntry {
-  ts: string          // ISO 8601
-  event: LogEvent
-  taskId?: string
-  taskType?: string
-  phase?: string
-  agent?: string
-  scheduleId?: string
-  outputFile?: string
-  costUsd?: number
-  durationMs?: number
-  reason?: string
-}
+`trigger` 建议只使用 `initial | resume | retry`；不单独保留 `manual` 枚举。
+
+---
+
+## 九、artifact intake
+
+管理器读取 `artifactRefs` 后执行统一 intake。
+
+规则：
+
+- intake 默认使用“复制”，不默认移动
+- 产物的最终搬运、归档、标准化落点、清理由管理器负责
+- 原始 `workdir/` 现场默认保留
+
+---
+
+## 十、Runner 注入说明
+
+runner 启动 Agent 时，应统一注入最小且稳定的系统说明。任务模板或 `task.md` 只描述任务业务内容，不重复定义系统协议。
+
+所有任务都应看到一个 `shared-state` 概念；对 schedule 任务，它是唯一被系统明确允许的跨实例业务状态目录。
+
+至少应注入：
+
+- 当前工作目录是 `workdir/`
+- 应先读取 `task.md`
+- 如有需要，再读取 `workdir/` 下其他文件
+- 所有运行期修改、生成、整理文件都应在 `workdir/` 内进行
+- `shared-state` 绝对路径
+- `AgentResult` 协议
+- `artifactRefs` 的相对路径规则
+
+---
+
+## 十一、运行时目录总览
+
+```text
+workspace/
+  queue/
+    pending/
+    running/
+    paused/
+    done/
+    blocked/
+
+  schedules/
+    <scheduleId>/
+      schedule.json
+      schedule-state.json
+      spec/
+      shared-state/
+
+  tasks/
+    <taskId>/
+      spec/
+      workdir/
+      runs/
+      managed-artifacts/
+
+  logs/
+    system/
+      YYYY-MM-DD.jsonl
 ```
 
 ---
 
-## 六、关键流程
+## 十二、相关决策文档
 
-### 6.1 单阶段任务执行（research / code-review）
+更细的设计决策见：
 
-```
-Orchestrator.runOneIteration()
-  │
-  ├─ queue.dequeue()                    # mv pending/→running/（原子）
-  ├─ registry.getType(task.type)        # 加载类型定义
-  ├─ resolvePhase(type, task)           # 合并 phaseOverrides
-  ├─ runner.run(phase, task)            # 调用 Agent
-  │    └─ 写 running/{id}.result.json
-  ├─ readResult()
-  │    ├─ status=success → mv running/→done/，记录 outputFile
-  │    ├─ status!=success，retry<max → mv running/→pending/，retry++
-  │    └─ status!=success，retry>=max → mv running/→blocked/
-  └─ log(entry)
-```
-
-### 6.2 多阶段任务执行（feature-dev）
-
-```
-阶段 0（plan）：
-  run agent → humanReview=true → mv running/→waiting/
-  ↓ drift task approve <id>
-  mv waiting/→running/，currentPhaseIndex++
-
-阶段 1（implement）：
-  gitCheckpoint=true → git checkout -b drift/{id}，记录 branchName
-  run agent → result.json
-  ↓ success → currentPhaseIndex++，继续下一阶段
-
-阶段 2（verify）：
-  run agent → result.json
-  → exec verificationCmd
-    ├─ 通过 → mv running/→done/
-    └─ 失败，rollbackOnFailure=true → git checkout main，删除分支
-                                    → mv running/→blocked/
-```
-
-### 6.3 定时触发
-
-```
-Scheduler（独立进程，每分钟轮询）
-  │
-  ├─ 读取 scheduler/schedules.json
-  ├─ 遍历 enabled=true 的条目
-  ├─ 判断 cron 是否命中（基于 lastEnqueuedAt）
-  └─ 命中 → 从 taskTemplate 复制，生成新 TaskInstance（新 id + 新时间戳）
-           → mv 到 queue/pending/{id}.json
-           → 更新 lastEnqueuedAt
-           → 写日志
-```
-
----
-
-## 七、CLI 命令设计
-
-```
-drift task add [--type research|code-review|doc-review|feature-dev]
-               [--agent claude|codex]
-               [--title "标题"]
-               # 参数不足时交互式问询，强制执行需求分析
-
-drift task list [--status pending|running|done|blocked|waiting]
-drift task remove <id>
-drift task approve <id>            # 将 waiting 任务推进到下一阶段
-
-drift schedule add                 # 交互式创建定时任务
-drift schedule list
-drift schedule enable <id>
-drift schedule disable <id>
-drift schedule run <id>            # 立即触发一次（不等 cron）
-
-drift start [--daemon]             # 启动 Orchestrator + Scheduler
-drift stop                         # SIGTERM 进程组，归还 running 任务到 pending
-drift status                       # 进程状态 + 队列各目录计数 + 最近日志
-
-drift logs [--tail 20] [--follow]  # 读取 logs/*.jsonl
-```
-
----
-
-## 八、扩展指南
-
-### 添加新任务类型
-
-1. `task-types/` 下新建 `{type}.json`，定义 `phases`
-2. `tasks/templates/` 下新建对应 Prompt 模板
-3. 无需修改任何核心代码
-
-### 接入新 Agent
-
-1. `src/runners/` 下新建 `{agent}.ts`，继承 `BaseRunner`
-2. 实现 `execute(prompt, phase, task)` 方法
-3. 在 `src/runners/index.ts` 注册
-4. BaseRunner 的 `enforceContract()` 会在 Agent 未写 result.json 时自动生成 error 记录
-
-### 添加定时任务
-
-1. `tasks/scheduled/` 下新建任务模板 JSON（TaskInstance 格式，省略运行时字段）
-2. `drift schedule add` 填写 cron 表达式和模板路径
-
----
-
-## 九、技术栈
-
-| 类别 | 选型 | 说明 |
-|------|------|------|
-| 语言 | TypeScript | 类型安全，编译期发现配置错误 |
-| 运行时 | Node.js 20+ | 原生 ESM，fs/promises 稳定 |
-| 子进程 | `execa` | 可靠的进程管理和信号处理 |
-| Cron | `node-cron` | 标准 cron 语法，轻量 |
-| 运行时校验 | `zod` | 加载任务/类型文件时校验格式 |
-| CLI | `commander` | 成熟，TypeScript 友好 |
-| 交互式问询 | `@inquirer/prompts` | 现代 API，替代 readline |
-| 测试 | `vitest` | 快，TypeScript 原生支持 |
-
-无数据库：队列用文件系统（`fs.rename` 原子操作），报告保存为 Markdown，日志用 JSON Lines。规模增大后可平滑迁移到 SQLite（仅替换 `src/queue.ts`）。
-
----
-
-## 十、开放问题
-
-1. **并发执行**：当前设计串行。并行执行多个任务需在 Orchestrator 引入 worker 池和并发队列控制。
-
-2. **Agent 费用解析**：`costUsd` 在日志里有意义，但各 Agent CLI 输出格式不同，是否值得解析需权衡维护成本。
-
-3. **waiting 状态通知**：多阶段任务进入 waiting 后，当前依赖用户主动 `drift status`，可考虑系统通知或 Webhook。
-
-4. **报告索引**：`reports/` 平铺结构，任务量增大后考虑生成 `reports/index.md`。
+- [0001 Execution Protocol](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0001-execution-protocol.md)
+- [0002 Task Model](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0002-task-model.md)
+- [0003 Runner Injected Instructions](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0003-runner-injected-instructions.md)
+- [0004 Task Creation](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0004-task-creation.md)
+- [0005 Scheduling](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0005-scheduling.md)
+- [0006 Crash Recovery](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0006-crash-recovery.md)
+- [0007 Concurrency](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0007-concurrency.md)
+- [0008 Schedule Shared State](/Users/york/data/workspace/ai/n3/drift-work/docs/decisions/0008-schedule-shared-state.md)

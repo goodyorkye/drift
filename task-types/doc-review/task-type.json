@@ -1,0 +1,9 @@
+{
+    "type": "doc-review",
+    "label": "文档审查",
+    "description": "文档审查：扫描目录，检查正确性/一致性/格式，发现洞察，只读不改",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 1800000,
+    "defaultMaxRetries": 2,
+    "defaultBudgetUsd": 8.0
+}

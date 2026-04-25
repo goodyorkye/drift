@@ -1,0 +1,25 @@
+{
+    "type": "git-audit",
+    "label": "Git 审计",
+    "description": "Git 提交审计：逐 commit 检查问题，产出审计报告",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 1800000,
+    "defaultMaxRetries": 2,
+    "defaultBudgetUsd": 5.0,
+    "runnerEnvPresets": [
+        {
+            "name": "Claude-阿里云CodePlan-GLM5",
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "sk-sp-2f274ea0b17143fc9c69830e1a045617",
+                "ANTHROPIC_BASE_URL": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3-coder-next",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5",
+                "ANTHROPIC_MODEL": "glm-5",
+                "ANTHROPIC_REASONING_MODEL": "glm-5",
+                "API_TIMEOUT_MS": "3000000",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+            }
+        }
+    ]
+}

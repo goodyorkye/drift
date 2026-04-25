@@ -1,75 +1,91 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { type Phase, type TaskInstance, type TaskResult } from '../types.js'
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { type Registry } from '../registry.js';
+import { type ExecutionResult, type RunMeta, type TaskMetadata } from '../types.js';
+import { scheduleSharedStateDir, taskWorkdir } from '../paths.js';
 
-const QUEUE_RUNNING_DIR = 'queue/running'
+export interface RunnerContext {
+    runMeta: RunMeta;
+    runDir: string;
+    registry: Registry;
+}
+
+export interface RunnerExecutionOutput {
+    result: ExecutionResult;
+    sessionRef?: string;
+}
 
 export abstract class BaseRunner {
-  /**
-   * 执行任务的具体逻辑，由子类实现。
-   * 实现者负责调用 Agent CLI，并期望 Agent 写入 result.json。
-   */
-  protected abstract execute(
-    prompt: string,
-    phase: Phase,
-    task: TaskInstance
-  ): Promise<void>
+    protected abstract execute(prompt: string, task: TaskMetadata, context: RunnerContext): Promise<RunnerExecutionOutput>;
 
-  /**
-   * 公共入口：构建 prompt → 执行 → 校验合约。
-   * BaseRunner 确保无论 Agent 是否写入 result.json，文件最终都存在。
-   */
-  async run(phase: Phase, task: TaskInstance): Promise<TaskResult> {
-    const prompt = await this.buildPrompt(phase, task)
-    const resultFile = path.join(QUEUE_RUNNING_DIR, `${task.id}.result.json`)
+    async run(task: TaskMetadata, context: RunnerContext): Promise<RunnerExecutionOutput> {
+        const prompt = await this.buildPrompt(task, context);
+        const resultFile = path.join(taskWorkdir(task.taskId), 'agent-result.json');
 
-    // 清理上次可能残留的 result.json
-    await fs.unlink(resultFile).catch(() => {})
+        await fs.unlink(resultFile).catch(() => {});
 
-    try {
-      await this.execute(prompt, phase, task)
-    } catch (err) {
-      // Agent 进程异常退出，enforceContract 会生成 error 记录
+        try {
+            return await this.execute(prompt, task, context);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : 'Runner execution failed';
+            return {
+                result: {
+                    status: 'error',
+                    reason,
+                },
+            };
+        }
     }
 
-    return this.enforceContract(resultFile)
-  }
+    private async buildPrompt(task: TaskMetadata, context: RunnerContext): Promise<string> {
+        const guidePath = await context.registry.getGuidePath(task.type);
+        const sharedStatePath =
+            task.createdBy.kind === 'schedule' && task.createdBy.sourceId
+                ? scheduleSharedStateDir(task.createdBy.sourceId)
+                : taskWorkdir(task.taskId);
+        await fs.mkdir(sharedStatePath, { recursive: true });
+        const sections = [
+            '你正在被 drift-work 任务管理器调度执行任务。',
+            '',
+            '系统规则：',
+            '- 当前工作目录就是你的任务执行目录，跨次执行（resume/retry）保持不变。',
+            '- 先读取当前目录下的 task.md 了解任务。',
+            '- 如有需要，再读取当前目录下的其他文件。',
+            '- 不要把 task.md 或任务材料文件当作运行期状态存储。',
+            '- 所有运行期修改、生成、整理文件都应在当前工作目录内进行。',
+            '- 如需跨次执行保留业务状态，读写下方提供的 shared-state 目录。',
+            '- shared-state 是任务业务状态黑盒目录，管理器不解析其中内容。',
+            '',
+            `shared-state 目录（可读写，绝对路径）：${sharedStatePath}`,
+        ];
 
-  /** 读取 Prompt 模板，注入任务参数。 */
-  private async buildPrompt(phase: Phase, task: TaskInstance): Promise<string> {
-    const template = await fs.readFile(phase.template, 'utf-8')
-    const taskJson = JSON.stringify(task, null, 2)
-    return [
-      template,
-      '',
-      '---',
-      '## 当前任务参数',
-      '',
-      '```json',
-      taskJson,
-      '```',
-      '',
-      '## Result Contract',
-      '',
-      `执行完成后，将结果写入 ${QUEUE_RUNNING_DIR}/${task.id}.result.json：`,
-      '```json',
-      '{"status": "success|blocked|error", "reason": "失败原因", "outputFile": "reports/..."}',
-      '```',
-    ].join('\n')
-  }
+        sections.push(
+            '',
+            '系统状态边界：',
+            '- 如需跨次业务状态，只使用系统明确注入的 shared-state 目录。',
+            '- 不要自行发明其他跨任务状态路径。',
+            '',
+            'AgentResult 协议：',
+            '```json',
+            JSON.stringify(
+                {
+                    status: 'success | paused | blocked',
+                    reason: '可选；paused/blocked 时应填写',
+                    artifactRefs: ['相对当前工作目录的路径，可选'],
+                },
+                null,
+                2,
+            ),
+            '```',
+            '- 将最终结果写入当前工作目录下的 agent-result.json。',
+            '- artifactRefs 只能填写相对当前工作目录的路径。',
+        );
 
-  /** 确保 result.json 存在，若 Agent 未写入则生成 error 记录。 */
-  private async enforceContract(resultFile: string): Promise<TaskResult> {
-    try {
-      const raw = await fs.readFile(resultFile, 'utf-8')
-      return JSON.parse(raw) as TaskResult
-    } catch {
-      const fallback: TaskResult = {
-        status: 'error',
-        reason: 'Agent did not write result.json',
-      }
-      await fs.writeFile(resultFile, JSON.stringify(fallback, null, 2))
-      return fallback
+        if (guidePath) {
+            sections.push('', `类型 guide（只读补充材料，绝对路径）：${guidePath}`);
+        }
+
+        sections.push('', `任务类型：${task.type}`, `任务标题：${task.title}`);
+        return sections.join('\n');
     }
-  }
 }

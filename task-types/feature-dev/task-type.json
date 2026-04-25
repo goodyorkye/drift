@@ -1,0 +1,9 @@
+{
+    "type": "feature-dev",
+    "label": "功能开发",
+    "description": "功能开发：围绕任务正文自主完成分析、实现与验证",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 3600000,
+    "defaultMaxRetries": 1,
+    "defaultBudgetUsd": 20.0
+}

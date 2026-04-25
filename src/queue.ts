@@ -1,87 +1,102 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { type TaskInstance, type QueueStatus } from './types.js'
-
-const QUEUE_DIR = 'queue'
+import { appendSystemLog } from './logging.js';
+import {
+    detectQueueStatus,
+    ensureWorkspaceDirs,
+    listQueueTickets,
+    readTask,
+    removeQueueTicket,
+    resetWorkdir,
+    transitionQueueTicket,
+    writeQueueTicket,
+    writeTask,
+} from './storage.js';
+import { formatLocalIsoTimestamp } from './time.js';
+import { type QueueStatus, type QueueTicket, type TaskMetadata } from './types.js';
 
 export class FileQueue {
-  private dir(status: QueueStatus): string {
-    return path.join(QUEUE_DIR, status)
-  }
+    async ensureDirs(): Promise<void> {
+        await ensureWorkspaceDirs();
+    }
 
-  /** 从 pending 取一个任务，原子移到 running。无任务返回 null。 */
-  async dequeue(): Promise<TaskInstance | null> {
-    const files = await fs.readdir(this.dir('pending')).catch(() => [])
-    const jsonFiles = files.filter(f => f.endsWith('.json'))
-    if (jsonFiles.length === 0) return null
+    async enqueue(task: TaskMetadata, enteredAt: string = formatLocalIsoTimestamp()): Promise<void> {
+        task.status = 'pending';
+        task.statusUpdatedAt = enteredAt;
+        task.lastEnqueuedAt = enteredAt;
+        await writeTask(task);
+        await writeQueueTicket('pending', { taskId: task.taskId, enteredAt });
+    }
 
-    const file = jsonFiles[0]
-    const src = path.join(this.dir('pending'), file)
-    const dst = path.join(this.dir('running'), file)
+    async claimNextPending(): Promise<TaskMetadata | null> {
+        const tickets = await listQueueTickets('pending');
+        const ticket = tickets[0];
+        if (!ticket) return null;
 
-    // fs.rename 在同文件系统内是原子操作
-    await fs.rename(src, dst)
-    const raw = await fs.readFile(dst, 'utf-8')
-    return JSON.parse(raw) as TaskInstance
-  }
+        const now = formatLocalIsoTimestamp();
+        await transitionQueueTicket(ticket.taskId, 'pending', 'running', now);
+        return readTask(ticket.taskId);
+    }
 
-  /** 将任务从 running 移到目标状态，同时更新任务文件内容。 */
-  async transition(task: TaskInstance, to: QueueStatus): Promise<void> {
-    const filename = `${task.id}.json`
-    const src = path.join(this.dir('running'), filename)
-    const dst = path.join(this.dir(to), filename)
-    await fs.writeFile(src, JSON.stringify(task, null, 2))
-    await fs.rename(src, dst)
-  }
+    async moveTask(task: TaskMetadata, to: QueueStatus, enteredAt: string = formatLocalIsoTimestamp()): Promise<void> {
+        const from = await detectQueueStatus(task.taskId);
+        if (!from) {
+            await writeQueueTicket(to, { taskId: task.taskId, enteredAt });
+        } else if (from !== to) {
+            await transitionQueueTicket(task.taskId, from, to, enteredAt);
+        } else {
+            await writeQueueTicket(to, { taskId: task.taskId, enteredAt });
+        }
 
-  /** 将任务从 waiting 移回 running（approve 操作）。 */
-  async approve(taskId: string): Promise<TaskInstance> {
-    const filename = `${taskId}.json`
-    const src = path.join(this.dir('waiting'), filename)
-    const dst = path.join(this.dir('running'), filename)
-    await fs.rename(src, dst)
-    const raw = await fs.readFile(dst, 'utf-8')
-    return JSON.parse(raw) as TaskInstance
-  }
+        task.status = to;
+        task.statusUpdatedAt = enteredAt;
+        if (to === 'pending') task.lastEnqueuedAt = enteredAt;
+        await writeTask(task);
+    }
 
-  /** 将新任务写入 pending 队列。 */
-  async enqueue(task: TaskInstance): Promise<void> {
-    const file = path.join(this.dir('pending'), `${task.id}.json`)
-    await fs.writeFile(file, JSON.stringify(task, null, 2))
-  }
+    async rerun(taskId: string): Promise<TaskMetadata> {
+        const task = await readTask(taskId);
+        if (task.status !== 'done' && task.status !== 'blocked') {
+            throw new Error(`Only done or blocked tasks can be rerun. Current status: ${task.status}`);
+        }
+        task.retryCount = 0;
+        await resetWorkdir(task.taskId);
+        await this.moveTask(task, 'pending');
+        return readTask(taskId);
+    }
 
-  /** 列出指定状态的所有任务。 */
-  async list(status: QueueStatus): Promise<TaskInstance[]> {
-    const files = await fs.readdir(this.dir(status)).catch(() => [])
-    const tasks = await Promise.all(
-      files
-        .filter(f => f.endsWith('.json'))
-        .map(async f => {
-          const raw = await fs.readFile(path.join(this.dir(status), f), 'utf-8')
-          return JSON.parse(raw) as TaskInstance
-        })
-    )
-    return tasks.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-  }
+    async resume(taskId: string): Promise<TaskMetadata> {
+        const task = await readTask(taskId);
+        await this.moveTask(task, 'pending');
+        return readTask(taskId);
+    }
 
-  /** 删除 pending 中的任务。 */
-  async remove(taskId: string): Promise<void> {
-    const file = path.join(this.dir('pending'), `${taskId}.json`)
-    await fs.unlink(file)
-  }
+    async abandon(taskId: string, reason: string = 'Task abandoned'): Promise<TaskMetadata> {
+        const task = await readTask(taskId);
+        await this.moveTask(task, 'blocked');
+        await appendSystemLog({
+            event: 'task_status',
+            taskId: task.taskId,
+            taskType: task.type,
+            status: 'blocked',
+            reason,
+        });
+        return readTask(taskId);
+    }
 
-  /** 读取 running 目录下的 result.json。 */
-  async readResult(taskId: string): Promise<unknown> {
-    const file = path.join(this.dir('running'), `${taskId}.result.json`)
-    const raw = await fs.readFile(file, 'utf-8')
-    return JSON.parse(raw)
-  }
+    async list(status: QueueStatus): Promise<Array<QueueTicket & { task: TaskMetadata }>> {
+        const tickets = await listQueueTickets(status);
+        const tasks = await Promise.all(
+            tickets.map(async ticket => ({
+                ...ticket,
+                task: await readTask(ticket.taskId),
+            })),
+        );
+        return tasks;
+    }
 
-  /** 确保队列目录存在（启动时调用）。 */
-  async ensureDirs(): Promise<void> {
-    const statuses: QueueStatus[] = ['pending', 'running', 'done', 'blocked', 'waiting']
-    await Promise.all(
-      statuses.map(s => fs.mkdir(this.dir(s), { recursive: true }))
-    )
-  }
+    async remove(taskId: string): Promise<void> {
+        const status = await detectQueueStatus(taskId);
+        if (status) {
+            await removeQueueTicket(status, taskId);
+        }
+    }
 }

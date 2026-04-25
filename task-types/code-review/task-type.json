@@ -1,0 +1,25 @@
+{
+    "type": "code-review",
+    "label": "代码审查",
+    "description": "代码审查：基于 git commit 的只读审查，按提交者分组，只报告高风险问题",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 1800000,
+    "defaultMaxRetries": 2,
+    "defaultBudgetUsd": 10.0,
+    "runnerEnvPresets": [
+        {
+            "name": "中文高风险审查",
+            "env": {
+                "REPORT_LANGUAGE": "zh-CN",
+                "REVIEW_SEVERITY": "high"
+            }
+        },
+        {
+            "name": "英文严格审查",
+            "env": {
+                "REPORT_LANGUAGE": "en",
+                "REVIEW_SEVERITY": "strict"
+            }
+        }
+    ]
+}

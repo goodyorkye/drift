@@ -1,33 +1,89 @@
 {
-  "name": "drift-work",
-  "version": "0.1.0",
-  "description": "Autonomous AI agent task scheduling and execution system",
-  "type": "module",
-  "bin": {
-    "drift": "./dist/cli/index.js"
-  },
-  "scripts": {
-    "dev": "tsx src/cli/index.ts",
-    "build": "tsc",
-    "start": "node dist/cli/index.js",
-    "test": "vitest",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@inquirer/prompts": "^7.0.0",
-    "commander": "^12.0.0",
-    "execa": "^9.0.0",
-    "node-cron": "^3.0.0",
-    "zod": "^3.23.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/node-cron": "^3.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^2.0.0"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  }
+    "name": "drift-work",
+    "version": "0.1.0",
+    "description": "Autonomous AI agent task scheduling and execution system",
+    "type": "module",
+    "bin": {
+        "drift": "./dist/cli/index.js"
+    },
+    "scripts": {
+        "dev": "tsx src/cli/index.ts",
+        "build": "tsc",
+        "start": "node dist/cli/index.js",
+        "test": "vitest",
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint . --ext .ts --ignore-path .gitignore",
+        "lint:fix": "eslint . --ext .ts --fix --ignore-path .gitignore",
+        "format": "prettier . --check --ignore-path .gitignore",
+        "format:write": "prettier . --write --ignore-path .gitignore"
+    },
+    "dependencies": {
+        "@inquirer/prompts": "^7.0.0",
+        "commander": "^12.0.0",
+        "execa": "^9.0.0",
+        "node-cron": "^3.0.0",
+        "zod": "^3.23.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/node-cron": "^3.0.0",
+        "@typescript-eslint/eslint-plugin": "^7.18.0",
+        "@typescript-eslint/parser": "^7.18.0",
+        "eslint": "^8.57.0",
+        "eslint-config-prettier": "^9.1.0",
+        "eslint-plugin-prettier": "^5.2.1",
+        "prettier": "^3.2.5",
+        "tsx": "^4.0.0",
+        "typescript": "~5.5.4",
+        "vitest": "^2.0.0"
+    },
+    "eslintConfig": {
+        "root": true,
+        "env": {
+            "node": true,
+            "es2022": true
+        },
+        "parser": "@typescript-eslint/parser",
+        "parserOptions": {
+            "ecmaVersion": "latest",
+            "sourceType": "module"
+        },
+        "plugins": [
+            "@typescript-eslint",
+            "prettier"
+        ],
+        "extends": [
+            "eslint:recommended",
+            "plugin:@typescript-eslint/recommended",
+            "plugin:prettier/recommended"
+        ],
+        "ignorePatterns": [
+            "dist/",
+            "queue/",
+            "reports/",
+            "logs/"
+        ],
+        "rules": {
+            "prettier/prettier": "warn",
+            "arrow-parens": "off",
+            "generator-star-spacing": "off",
+            "no-unused-vars": [
+                "warn"
+            ],
+            "@typescript-eslint/no-unused-vars": "off",
+            "strict": "off",
+            "no-constant-condition": "off"
+        }
+    },
+    "prettier": {
+        "tabWidth": 4,
+        "semi": true,
+        "singleQuote": true,
+        "printWidth": 120,
+        "trailingComma": "all",
+        "arrowParens": "avoid"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    }
 }

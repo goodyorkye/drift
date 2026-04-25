@@ -1,0 +1,67 @@
+import path from 'node:path';
+
+export const PROJECT_ROOT = path.resolve(process.env.DRIFT_ROOT ?? process.cwd());
+
+export const WORKSPACE_DIR = path.join(PROJECT_ROOT, 'workspace');
+export const QUEUE_DIR = path.join(WORKSPACE_DIR, 'queue');
+export const TASKS_DIR = path.join(WORKSPACE_DIR, 'tasks');
+export const SCHEDULES_DIR = path.join(WORKSPACE_DIR, 'schedules');
+export const LOGS_DIR = path.join(WORKSPACE_DIR, 'logs');
+
+export const TASK_TYPES_DIR = path.join(PROJECT_ROOT, 'task-types');
+
+export function taskRoot(taskId: string): string {
+    return path.join(TASKS_DIR, taskId);
+}
+
+export function taskSpecDir(taskId: string): string {
+    return path.join(taskRoot(taskId), 'spec');
+}
+
+export function taskWorkdir(taskId: string): string {
+    return path.join(taskRoot(taskId), 'workdir');
+}
+
+export function taskRunsDir(taskId: string): string {
+    return path.join(taskRoot(taskId), 'runs');
+}
+
+export function taskRunDir(taskId: string, runId: string): string {
+    return path.join(taskRunsDir(taskId), runId);
+}
+
+export function taskManagedArtifactsDir(taskId: string): string {
+    return path.join(taskRoot(taskId), 'managed-artifacts');
+}
+
+export function taskFile(taskId: string): string {
+    return path.join(taskRoot(taskId), 'task.json');
+}
+
+export function queueStatusDir(status: string): string {
+    return path.join(QUEUE_DIR, status);
+}
+
+export function queueTicketFile(status: string, taskId: string): string {
+    return path.join(queueStatusDir(status), `${taskId}.json`);
+}
+
+export function scheduleRoot(scheduleId: string): string {
+    return path.join(SCHEDULES_DIR, scheduleId);
+}
+
+export function scheduleSpecDir(scheduleId: string): string {
+    return path.join(scheduleRoot(scheduleId), 'spec');
+}
+
+export function scheduleSharedStateDir(scheduleId: string): string {
+    return path.join(scheduleRoot(scheduleId), 'shared-state');
+}
+
+export function scheduleFile(scheduleId: string): string {
+    return path.join(scheduleRoot(scheduleId), 'schedule.json');
+}
+
+export function scheduleStateFile(scheduleId: string): string {
+    return path.join(scheduleRoot(scheduleId), 'schedule-state.json');
+}
