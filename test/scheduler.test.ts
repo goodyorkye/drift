@@ -269,6 +269,7 @@ describe('schedule CLI', () => {
         const { registerScheduleCommands } = await import('../src/cli/schedule.js');
         const { ensureScheduleSpec, writeSchedule, writeScheduleState } = await import('../src/storage.js');
         const { scheduleSpecDir } = await import('../src/paths.js');
+        const { formatTimestampForDisplay } = await import('../src/time.js');
 
         await ensureScheduleSpec('daily-research');
         await fs.writeFile(path.join(scheduleSpecDir('daily-research'), 'task.md'), '# scheduled task');
@@ -305,7 +306,9 @@ describe('schedule CLI', () => {
         await program.parseAsync(['node', 'test', 'schedule', 'list']);
 
         expect(logSpy.mock.calls.flat()).toContain('daily-research  [enabled]  0 9 * * *');
-        expect(logSpy.mock.calls.flat()).toContain('  lastTriggered: 2026-04-21 17:00:00  lastAction: triggered  lastRun: done');
+        expect(logSpy.mock.calls.flat()).toContain(
+            `  lastTriggered: ${formatTimestampForDisplay('2026-04-21T09:00:00.000Z')}  lastAction: triggered  lastRun: done`,
+        );
         logSpy.mockRestore();
     });
 

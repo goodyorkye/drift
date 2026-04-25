@@ -77,6 +77,7 @@ describe('task CLI', () => {
         const { registerTaskCommands } = await import('../src/cli/task.js');
         const { createRunMeta, writeQueueTicket, writeRunAgentResult, writeTask, writeJson } = await import('../src/storage.js');
         const { taskRunDir } = await import('../src/paths.js');
+        const { formatTimestampForDisplay } = await import('../src/time.js');
 
         const task = makeTask({
             status: 'done',
@@ -118,10 +119,10 @@ describe('task CLI', () => {
 
         expect(logSpy.mock.calls.flat()).toContain(`Task: ${task.taskId}`);
         expect(logSpy.mock.calls.flat()).toContain('Queue Status: done');
-        expect(logSpy.mock.calls.flat()).toContain('Created At: 2026-04-21 17:00:00');
-        expect(logSpy.mock.calls.flat()).toContain('Last Finished At: 2026-04-21 17:05:00');
+        expect(logSpy.mock.calls.flat()).toContain(`Created At: ${formatTimestampForDisplay(task.createdAt)}`);
+        expect(logSpy.mock.calls.flat()).toContain(`Last Finished At: ${formatTimestampForDisplay(task.lastFinishedAt)}`);
         expect(logSpy.mock.calls.flat()).toContain('  Session Ref: session-123');
-        expect(logSpy.mock.calls.flat()).toContain('  Started At: 2026-04-21 17:02:00');
+        expect(logSpy.mock.calls.flat()).toContain(`  Started At: ${formatTimestampForDisplay(task.lastStartedAt)}`);
         expect(logSpy.mock.calls.flat()).toContain('  Result Status: success');
         expect(logSpy.mock.calls.flat()).toContain('  run-1/report.md');
         logSpy.mockRestore();
