@@ -1,6 +1,6 @@
 {
     "name": "@goodyorkye/drift",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Autonomous AI agent task scheduling and execution system",
     "license": "MIT",
     "type": "module",
