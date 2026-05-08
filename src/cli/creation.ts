@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { execa } from 'execa';
-import { type RunnerName } from '../types.js';
+import { type DraftMessage, type RunnerName } from '../types.js';
 
 export type CreationMode = 'task' | 'schedule';
 
@@ -63,6 +63,9 @@ export function buildCreationPrompt(
         '- task.md 不要求固定格式，但应让后续执行 agent 能读懂任务目标、背景、约束和期望产出',
         '- 如用户需求不够清楚，可以先和用户对话澄清，再整理成 task.md',
         '- 附加材料直接放在当前目录即可',
+        '- 如果任务目的本身是在生成某种内容结果（例如报告、摘要、答复、方案、文案、清单、说明文档等），默认应把“生成可下载文件产物”写进任务要求。',
+        '- 对这类内容型任务，除非用户明确要求不要文件产物，否则不要写出“无需生成文件”或等价要求。',
+        '- 这类内容型任务的 task.md 应尽量明确建议执行期生成什么文件、用什么格式，例如 report.md、summary.md、answer.md、results.json、table.csv。',
         `- ${sharedStateNote}`,
     ];
 
@@ -115,4 +118,83 @@ export function buildCreationCommandArgs(
 
     args.push(kickoffPrompt);
     return args;
+}
+
+export function buildCreationRoundPrompt(args: {
+    taskType: CreationPromptTaskType;
+    mode: CreationMode;
+    transcript: DraftMessage[];
+    userMessage: string;
+}): string {
+    const kind = args.mode === 'schedule' ? '定时任务定义' : '任务定义';
+    const history =
+        args.transcript.length === 0
+            ? '当前还没有历史对话。请从帮助用户澄清需求并整理当前目录下的 task.md 开始。'
+            : args.transcript
+                  .map(message => `${message.role === 'user' ? '用户' : '助手'}（${message.createdAt}）:\n${message.content}`)
+                  .join('\n\n');
+
+    return [
+        `你正在继续一个「${args.taskType.label ?? args.taskType.type}」类型的${kind}创建会话。`,
+        '',
+        '请延续下面这段会话上下文，在需要时直接修改当前目录内的文件，尤其是 task.md。',
+        '',
+        '历史对话：',
+        history,
+        '',
+        '本轮新的用户输入：',
+        args.userMessage,
+        '',
+        '请用中文简洁回复当前用户，并继续把当前目录整理成更清晰的任务定义。',
+    ].join('\n');
+}
+
+export async function runSpecCreationRound(args: {
+    method: RunnerName;
+    cwd: string;
+    taskType: CreationPromptTaskType;
+    guidePath: string | null;
+    mode: CreationMode;
+    transcript: DraftMessage[];
+    userMessage: string;
+}): Promise<string> {
+    const systemPrompt = buildCreationPrompt(args.taskType, args.guidePath, args.mode);
+    const prompt = buildCreationRoundPrompt(args);
+
+    if (args.method === 'codex') {
+        const result = await execa('codex', ['exec', '--full-auto', '--skip-git-repo-check', '-'], {
+            cwd: args.cwd,
+            input: `${prompt}\n\n${systemPrompt}`,
+            timeout: 10 * 60 * 1000,
+        });
+        return result.stdout.trim();
+    }
+
+    const result = await execa(
+        'claude',
+        [
+            '-p',
+            prompt,
+            '--max-turns',
+            '12',
+            '--permission-mode',
+            'bypassPermissions',
+            '--append-system-prompt',
+            [
+                '这是任务定义创建会话，不是任务执行会话。',
+                '只在当前工作目录内创建和修改文件。',
+                '不要读取或搜索当前工作目录之外的项目文件，除非用户消息明确给出只读 guide 路径。',
+                '不要替任务管理器设计目录结构、状态文件或系统实现方案。',
+                '',
+                systemPrompt,
+            ].join('\n'),
+        ],
+        {
+            cwd: args.cwd,
+            timeout: 10 * 60 * 1000,
+            stdin: 'ignore',
+        },
+    );
+
+    return result.stdout.trim();
 }

@@ -64,6 +64,9 @@ export abstract class BaseRunner {
             '系统状态边界：',
             '- 如需跨次业务状态，只使用系统明确注入的 shared-state 目录。',
             '- 不要自行发明其他跨任务状态路径。',
+            '- 如果任务的主要目的就是生成某种内容结果（例如报告、摘要、答复、方案、文案、清单、表格、说明文档等），默认应把最终内容落成当前工作目录内的文件。',
+            '- 对这类内容型结果，除非 task.md 明确要求只在最终回复中展示而不要文件，否则应生成对应文件，并把该文件写入 artifactRefs。',
+            '- 生成内容文件时，优先使用清晰可读的格式，例如 .md、.txt、.json、.csv；文件名应简洁且语义明确。',
             '',
             'AgentResult 协议：',
             '```json',
@@ -79,6 +82,7 @@ export abstract class BaseRunner {
             '```',
             '- 将最终结果写入当前工作目录下的 agent-result.json。',
             '- artifactRefs 只能填写相对当前工作目录的路径。',
+            '- 如果你生成了应交付给用户的内容文件，不要漏填 artifactRefs。',
         );
 
         if (guidePath) {

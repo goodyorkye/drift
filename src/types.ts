@@ -1,5 +1,12 @@
 export type RunnerName = 'claude' | 'codex';
 
+export type ActorSource = 'cli' | 'web' | 'scheduler' | 'system';
+
+export interface ActorRef {
+    name: string;
+    source: ActorSource;
+}
+
 export interface RunnerEnvPreset {
     name: string;
     env: Record<string, string>;
@@ -14,6 +21,23 @@ export interface TaskType {
     defaultMaxRetries?: number;
     defaultTimeoutMs?: number;
     runnerEnvPresets?: RunnerEnvPreset[];
+}
+
+export interface DraftMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    createdAt: string;
+}
+
+export interface TaskDraft {
+    draftId: string;
+    kind: 'task';
+    taskType: TaskType;
+    creationMethod: RunnerName | 'manual';
+    createdAt: string;
+    updatedAt: string;
+    guidePath: string | null;
+    transcript: DraftMessage[];
 }
 
 export type CreatedByKind = 'manual' | 'claude' | 'codex' | 'schedule';
@@ -86,6 +110,7 @@ export interface RunMeta {
     agentResultRef?: string;
     reason?: string;
     runnerEnv?: Record<string, string>;
+    runnerPid?: number;
 }
 
 export interface ScheduleConfig {
@@ -125,6 +150,7 @@ export interface ScheduleState {
 export interface LogEntry {
     ts: string;
     event: string;
+    actor?: ActorRef;
     taskId?: string;
     taskType?: string;
     runner?: RunnerName;

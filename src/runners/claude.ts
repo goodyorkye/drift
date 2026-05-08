@@ -7,7 +7,7 @@ import { validateExecutionResult } from '../result-contract.js';
 import { type TaskMetadata } from '../types.js';
 import { type RunnerContext, type RunnerExecutionOutput } from './base.js';
 import { BaseRunner } from './base.js';
-import { pathExists, readJson } from '../storage.js';
+import { pathExists, readJson, updateRunMeta } from '../storage.js';
 
 export class ClaudeRunner extends BaseRunner {
     protected async execute(prompt: string, task: TaskMetadata, context: RunnerContext): Promise<RunnerExecutionOutput> {
@@ -45,6 +45,9 @@ export class ClaudeRunner extends BaseRunner {
 
         subprocess.stdout?.pipe(stdoutStream);
         subprocess.stderr?.pipe(stderrStream);
+        if (subprocess.pid) {
+            await updateRunMeta(task.taskId, context.runMeta.runId, { runnerPid: subprocess.pid });
+        }
 
         let sessionRef: string | undefined;
 

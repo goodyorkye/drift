@@ -48,7 +48,30 @@ npm run build
 npm pack --dry-run
 ```
 
-确认 npm 包中包含 `dist/`、`task-types/`、`README.md`、`LICENSE` 和 `package.json`，并确认没有包含 `workspace/`。
+确认 npm 包中包含 `dist/`、`dist/web/client/`、`task-types/`、`README.md`、`LICENSE` 和 `package.json`，并确认没有包含 `workspace/`。
+
+## 文档同步检查
+
+发布 GitHub 新版本前，至少确认以下文档与当前实现一致：
+
+- `README.md`
+  - 默认任务类型是否仍为 `general`
+  - Web UI 能力、`drift web` 选项、当前创建器覆盖范围是否准确
+  - 内容型任务默认产物规则是否准确
+- `CHANGELOG.md`
+  - 本次新增功能、行为变化、已知范围边界是否已记录
+- `docs/decisions/0009-web-ui.md`
+  - Web UI 的访问模型、写接口 actor、Task Create Assistant 范围是否准确
+- `docs/decisions/0010-web-creation-workbench.md`
+  - 草稿目录模型、创建助手边界、当前只覆盖 Task Create 的事实是否准确
+
+如果本次发布涉及 Web UI 或创建器，建议在发布前顺手再跑一次：
+
+```bash
+npm run build:web
+```
+
+并确认 `drift web` 能正常服务最新构建产物。
 
 ## 手动发布到 npm
 

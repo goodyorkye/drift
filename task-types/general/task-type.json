@@ -1,0 +1,9 @@
+{
+    "type": "general",
+    "label": "通用任务",
+    "description": "通用任务：适合未归类的日常请求，由执行 agent 根据材料自主完成",
+    "defaultRunner": "claude",
+    "defaultTimeoutMs": 1800000,
+    "defaultMaxRetries": 2,
+    "defaultBudgetUsd": 10.0
+}

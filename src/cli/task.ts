@@ -2,23 +2,28 @@ import { type Command } from 'commander';
 import { confirm, input, select } from '@inquirer/prompts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { cliActor } from '../core/actor.js';
+import {
+    abandonTask as abandonTaskAction,
+    enqueueTask as enqueueTaskAction,
+    removeTask as removeTaskAction,
+    rerunTask as rerunTaskAction,
+    resumeTask as resumeTaskAction,
+} from '../core/task-actions.js';
+import { inspectTaskDetails } from '../core/task-inspection.js';
 import { buildCreationEntryHint, launchSpecCreationSession } from './creation.js';
 import { DEFAULT_BUDGET_USD, DEFAULT_MAX_RETRIES, DEFAULT_RUNNER, DEFAULT_TIMEOUT_MS } from '../defaults.js';
 import { generateTaskId } from '../ids.js';
-import { taskRunDir, taskSpecDir } from '../paths.js';
+import { taskSpecDir } from '../paths.js';
 import { FileQueue } from '../queue.js';
-import { Registry } from '../registry.js';
+import { DEFAULT_TASK_TYPE, Registry } from '../registry.js';
 import { isRunnerAvailable, listAvailableRunners, listKnownRunners } from '../runners/index.js';
 import {
     detectQueueStatus,
     ensureTaskSpec,
     listTasks,
     pathExists,
-    readJson,
-    readRunAgentResult,
-    readRunMeta,
     readTask,
-    removeTaskRoot,
     writeTask,
 } from '../storage.js';
 import { formatLocalIsoTimestamp, formatTimestampForDisplay } from '../time.js';
@@ -31,7 +36,7 @@ export function registerTaskCommands(program: Command): void {
     task.command('list').description('List tasks').option('--status <status>', 'Filter by status').action(listTaskItems);
     task.command('inspect <id>').description('Show task details, latest run, and artifacts').action(inspectTask);
     task.command('enqueue <id>').description('Enqueue a not_queued task').action(enqueueTask);
-    task.command('remove <id>').description('Remove a not_queued or pending task').action(removeTask);
+    task.command('remove <id>').description('Remove any non-running task').action(removeTask);
     task.command('resume <id>').description('Resume a paused task').action(resumeTask);
     task.command('abandon <id>').description('Abandon a paused task and move it to blocked').action(abandonTask);
     task.command('rerun <id>').description('Re-run a done or blocked task from scratch').action(rerunTask);
@@ -50,6 +55,7 @@ async function addTask(): Promise<void> {
             name: `${taskType.label ?? taskType.type}  —  ${taskType.description}`,
             value: taskType.type,
         })),
+        default: types.some(taskType => taskType.type === DEFAULT_TASK_TYPE) ? DEFAULT_TASK_TYPE : types[0]?.type,
     });
 
     const creationChoices = [
@@ -167,35 +173,18 @@ async function listTaskItems(opts: { status?: string }): Promise<void> {
 }
 
 async function removeTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    if (!['not_queued', 'pending'].includes(task.status)) {
-        throw new Error(`Only not_queued or pending tasks can be removed. Current status: ${task.status}`);
-    }
-
-    const queue = new FileQueue();
-    await queue.remove(taskId);
-    await removeTaskRoot(taskId);
+    await removeTaskAction(taskId, { actor: cliActor() });
     console.log(`✓ Removed: ${taskId}`);
 }
 
 async function enqueueTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    if (task.status !== 'not_queued') {
-        throw new Error(`Only not_queued tasks can be enqueued. Current status: ${task.status}`);
-    }
-    if (!(await isRunnerAvailable(task.runner))) {
-        throw new Error(`Runner not available: ${task.runner}. Install it before enqueuing this task.`);
-    }
-
-    const queue = new FileQueue();
-    await queue.ensureDirs();
-    await queue.enqueue(task);
+    await enqueueTaskAction(taskId, { actor: cliActor() });
     console.log(`✓ Task enqueued: ${taskId}`);
 }
 
 async function inspectTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    const queueStatus = await detectQueueStatus(taskId);
+    const details = await inspectTaskDetails(taskId);
+    const { task, queueStatus } = details;
 
     console.log(`Task: ${task.taskId}`);
     console.log(`Title: ${task.title}`);
@@ -211,10 +200,8 @@ async function inspectTask(taskId: string): Promise<void> {
     console.log(`Last Started At: ${formatTimestampForDisplay(task.lastStartedAt)}`);
     console.log(`Last Finished At: ${formatTimestampForDisplay(task.lastFinishedAt)}`);
 
-    if (task.latestRunId) {
-        const runMeta = await readRunMeta(task.taskId, task.latestRunId).catch(() => null);
-        const result = await readRunAgentResult(task.taskId, task.latestRunId).catch(() => null);
-        const artifacts = await readManagedArtifacts(task.taskId, task.latestRunId);
+    if (task.latestRunId && details.latestRun) {
+        const { runMeta, result, artifacts } = details.latestRun;
 
         console.log('');
         console.log('Latest Run Details:');
@@ -245,35 +232,17 @@ async function inspectTask(taskId: string): Promise<void> {
 }
 
 async function resumeTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    if (task.status !== 'paused') {
-        throw new Error(`Only paused tasks can be resumed. Current status: ${task.status}`);
-    }
-
-    const queue = new FileQueue();
-    await queue.resume(taskId);
+    await resumeTaskAction(taskId, { actor: cliActor() });
     console.log(`✓ Resumed: ${taskId}`);
 }
 
 async function rerunTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    if (task.status !== 'done' && task.status !== 'blocked') {
-        throw new Error(`Only done or blocked tasks can be rerun. Current status: ${task.status}`);
-    }
-
-    const queue = new FileQueue();
-    await queue.rerun(taskId);
+    await rerunTaskAction(taskId, { actor: cliActor() });
     console.log(`✓ Rerun enqueued: ${taskId}`);
 }
 
 async function abandonTask(taskId: string): Promise<void> {
-    const task = await readTask(taskId);
-    if (task.status !== 'paused') {
-        throw new Error(`Only paused tasks can be abandoned. Current status: ${task.status}`);
-    }
-
-    const queue = new FileQueue();
-    await queue.abandon(taskId);
+    await abandonTaskAction(taskId, { actor: cliActor() });
     console.log(`✓ Abandoned: ${taskId}`);
 }
 
@@ -303,12 +272,4 @@ async function launchCreationSession(args: {
 function formatCreatedBy(task: TaskMetadata): string {
     if (!task.createdBy.sourceId) return task.createdBy.kind;
     return `${task.createdBy.kind} (${task.createdBy.sourceId})`;
-}
-
-async function readManagedArtifacts(taskId: string, runId: string): Promise<string[]> {
-    const intakeFile = path.join(taskRunDir(taskId, runId), 'intake.json');
-    if (!(await pathExists(intakeFile))) return [];
-
-    const intake = await readJson<Array<{ sourceRef: string; managedRef: string }>>(intakeFile);
-    return intake.map(record => record.managedRef);
 }

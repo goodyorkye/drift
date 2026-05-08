@@ -5,7 +5,7 @@ import path from 'node:path';
 import cron from 'node-cron';
 import { buildCreationEntryHint, launchSpecCreationSession } from './creation.js';
 import { FileQueue } from '../queue.js';
-import { Registry } from '../registry.js';
+import { DEFAULT_TASK_TYPE, Registry } from '../registry.js';
 import { scheduleRoot, scheduleSpecDir, taskSpecDir } from '../paths.js';
 import { isRunnerAvailable, listAvailableRunners, listKnownRunners } from '../runners/index.js';
 import { Scheduler } from '../scheduler.js';
@@ -74,6 +74,7 @@ async function addSchedule(): Promise<void> {
             name: `${taskType.label ?? taskType.type}  —  ${taskType.description}`,
             value: taskType.type,
         })),
+        default: types.some(taskType => taskType.type === DEFAULT_TASK_TYPE) ? DEFAULT_TASK_TYPE : types[0]?.type,
     });
     const taskType = registry.getType(type);
 

@@ -15,3 +15,7 @@ export function generateTaskId(date?: Date, timeZone?: string): string {
 export function generateRunId(date?: Date, timeZone?: string): string {
     return `run_${timestampPrefix(date, timeZone)}_${randomSuffix(8)}`;
 }
+
+export function generateDraftId(date?: Date, timeZone?: string): string {
+    return `draft_${timestampPrefix(date, timeZone)}_${randomSuffix(8)}`;
+}

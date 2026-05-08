@@ -91,6 +91,9 @@ describe('BaseRunner prompt', () => {
         const sharedStateDir = taskWorkdir(task.taskId);
         expect(runner.prompt).toContain(sharedStateDir);
         expect(runner.prompt).toContain('shared-state 目录');
+        expect(runner.prompt).toContain('如果任务的主要目的就是生成某种内容结果');
+        expect(runner.prompt).toContain('默认应把最终内容落成当前工作目录内的文件');
+        expect(runner.prompt).toContain('不要漏填 artifactRefs');
     });
 });
 

@@ -11,7 +11,7 @@ import {
     writeTask,
 } from './storage.js';
 import { formatLocalIsoTimestamp } from './time.js';
-import { type QueueStatus, type QueueTicket, type TaskMetadata } from './types.js';
+import { type ActorRef, type QueueStatus, type QueueTicket, type TaskMetadata } from './types.js';
 
 export class FileQueue {
     async ensureDirs(): Promise<void> {
@@ -69,11 +69,12 @@ export class FileQueue {
         return readTask(taskId);
     }
 
-    async abandon(taskId: string, reason: string = 'Task abandoned'): Promise<TaskMetadata> {
+    async abandon(taskId: string, reason: string = 'Task abandoned', actor?: ActorRef): Promise<TaskMetadata> {
         const task = await readTask(taskId);
         await this.moveTask(task, 'blocked');
         await appendSystemLog({
             event: 'task_status',
+            actor,
             taskId: task.taskId,
             taskType: task.type,
             status: 'blocked',

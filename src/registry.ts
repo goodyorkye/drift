@@ -4,6 +4,8 @@ import { BUILTIN_TASK_TYPES_DIR, TASK_TYPES_DIR } from './paths.js';
 import { type TaskType } from './types.js';
 import { pathExists } from './storage.js';
 
+export const DEFAULT_TASK_TYPE = 'general';
+
 export class Registry {
     private cache = new Map<string, TaskType>();
 
@@ -23,7 +25,11 @@ export class Registry {
     }
 
     listTypes(): TaskType[] {
-        return Array.from(this.cache.values()).sort((a, b) => a.type.localeCompare(b.type));
+        return Array.from(this.cache.values()).sort((a, b) => {
+            if (a.type === DEFAULT_TASK_TYPE && b.type !== DEFAULT_TASK_TYPE) return -1;
+            if (b.type === DEFAULT_TASK_TYPE && a.type !== DEFAULT_TASK_TYPE) return 1;
+            return a.type.localeCompare(b.type);
+        });
     }
 
     getType(typeName: string): TaskType {

@@ -127,6 +127,25 @@ describe('task CLI', () => {
         expect(logSpy.mock.calls.flat()).toContain('  run-1/report.md');
         logSpy.mockRestore();
     });
+
+    it('removes a blocked task from the CLI', async () => {
+        const { registerTaskCommands } = await import('../src/cli/task.js');
+        const { writeTask, pathExists } = await import('../src/storage.js');
+        const { taskRoot } = await import('../src/paths.js');
+
+        const task = makeTask({ status: 'blocked' });
+        await writeTask(task);
+
+        const program = new Command();
+        registerTaskCommands(program);
+
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        await program.parseAsync(['node', 'test', 'task', 'remove', task.taskId]);
+
+        expect(await pathExists(taskRoot(task.taskId))).toBe(false);
+        expect(logSpy).toHaveBeenCalledWith(`✓ Removed: ${task.taskId}`);
+        logSpy.mockRestore();
+    });
 });
 
 function makeTask(overrides: Partial<TaskMetadata> = {}): TaskMetadata {

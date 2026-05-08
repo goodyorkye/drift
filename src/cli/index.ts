@@ -4,6 +4,7 @@ import { handleCliError } from './error.js';
 import { registerTaskCommands } from './task.js';
 import { registerScheduleCommands } from './schedule.js';
 import { registerProcessCommands } from './process.js';
+import { registerWebCommand } from './web.js';
 
 const program = new Command();
 
@@ -12,5 +13,6 @@ program.name('drift').description('Autonomous AI agent task scheduling and execu
 registerTaskCommands(program);
 registerScheduleCommands(program);
 registerProcessCommands(program);
+registerWebCommand(program);
 
 program.parseAsync(process.argv).catch(handleCliError);

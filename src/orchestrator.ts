@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { generateRunId } from './ids.js';
 import { appendSystemLog } from './logging.js';
-import { taskManagedArtifactsDir, taskRunDir, taskWorkdir } from './paths.js';
+import { taskManagedArtifactsDir, taskRunDir, taskRunStopRequestFile, taskWorkdir } from './paths.js';
 import { FileQueue } from './queue.js';
 import { Registry } from './registry.js';
 import { getRunner } from './runners/index.js';
@@ -13,6 +13,7 @@ import {
     initializeWorkdir,
     listQueueTickets,
     pathExists,
+    readJson,
     readLatestRunResult,
     readScheduleState,
     readTask,
@@ -107,7 +108,17 @@ export class Orchestrator {
             await updateRunMeta(task.taskId, runId, { sessionRef: execution.sessionRef });
         }
 
-        await this.finalizeExecution(task, runId, execution.result);
+        const stopped = await this.readStopRequest(task.taskId, runId);
+        await this.finalizeExecution(
+            task,
+            runId,
+            stopped
+                ? {
+                      status: 'blocked',
+                      reason: stopped.reason,
+                  }
+                : execution.result,
+        );
     }
 
     private async finalizeExecution(task: TaskMetadata, runId: string, result: ExecutionResult): Promise<void> {
@@ -235,6 +246,14 @@ export class Orchestrator {
         if (latest?.status === 'paused') return 'resume';
         if (task.retryCount > 0) return 'retry';
         return 'initial';
+    }
+
+    private async readStopRequest(taskId: string, runId: string): Promise<{ reason: string } | null> {
+        const file = taskRunStopRequestFile(taskId, runId);
+        if (!(await pathExists(file))) return null;
+        return readJson<{ reason?: string }>(file)
+            .then(value => ({ reason: value.reason ?? 'Task stopped by user' }))
+            .catch(() => ({ reason: 'Task stopped by user' }));
     }
 
     private async recoverOrphanRunningTasks(): Promise<void> {
