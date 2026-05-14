@@ -7,7 +7,7 @@ describe('CLI version', () => {
         const packageJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf-8')) as {
             version: string;
         };
-        const { program } = await import('../src/cli/index.js');
+        const { program } = await import('../src/cli/program.js');
 
         expect(program.version()).toBe(packageJson.version);
     });
