@@ -32,6 +32,8 @@ async function startProcess(): Promise<void> {
     await scheduler.start();
 
     const orchestrator = new Orchestrator();
+    console.log(`Started Drift (PID: ${process.pid}). Scheduler is active and the queue watcher is running.`);
+    console.log('Use `drift status`, `drift logs`, or `drift stop` from another terminal to manage it.');
     await orchestrator.start();
 }
 
