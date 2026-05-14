@@ -289,7 +289,7 @@ async function clearScheduleTasks(scheduleId: string, opts: { yes?: boolean }): 
 }
 
 async function chooseExistingTaskId(): Promise<string> {
-    const tasks = await listTasks();
+    const tasks = (await listTasks()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     if (tasks.length === 0) {
         throw new Error('No existing tasks available to copy from.');
     }

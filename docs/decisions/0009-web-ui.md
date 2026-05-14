@@ -114,9 +114,12 @@ CLI、Scheduler 和系统恢复也可以使用 actor：
 - 在 Web 工作台中查看草稿文件、编辑 `task.md`、向创建助手发送消息
 - 支持在草稿目录中新建空文件与上传附加文件
 - 最终创建为 `not_queued` 或直接 enqueue
+- 通过 Schedule Create Assistant 创建 schedule 草稿
+- 支持新建 schedule 草稿或从现有 task 复制 `spec/`
+- 在 Web 工作台中整理 `spec/task.md` 后，再确认 `scheduleId / cron / runner / skipIfActive / enabled`
 - 选择 `manual` 创建方式时，不显示创建助手会话区，直接进入草稿编辑流程
 
-`Schedule Create Assistant`、schedule 编辑 UI、artifact 在线编辑仍属于后续扩展。
+schedule 编辑 UI、artifact 在线编辑仍属于后续扩展。
 
 运行中停止采用持久化 stop request：
 
@@ -174,8 +177,11 @@ GET  /api/tasks/:id/runs/:runId/logs/stderr
 GET  /api/queue
 GET  /api/schedules
 GET  /api/task-create/options
+GET  /api/schedule-create/options
 GET  /api/drafts/tasks/:draftId
 GET  /api/drafts/tasks/:draftId/files/content?path=task.md
+GET  /api/drafts/schedules/:draftId
+GET  /api/drafts/schedules/:draftId/files/content?path=task.md
 
 POST /api/tasks/:id/enqueue
 POST /api/tasks/:id/resume
@@ -185,6 +191,10 @@ POST /api/drafts/tasks
 POST /api/drafts/tasks/:draftId/files/content
 POST /api/drafts/tasks/:draftId/session
 POST /api/drafts/tasks/:draftId/finalize
+POST /api/drafts/schedules
+POST /api/drafts/schedules/:draftId/files/content
+POST /api/drafts/schedules/:draftId/session
+POST /api/drafts/schedules/:draftId/finalize
 ```
 
 写接口必须通过核心 task action 模块执行，并把 actor 传入审计日志。

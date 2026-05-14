@@ -40,6 +40,19 @@ export interface TaskDraft {
     transcript: DraftMessage[];
 }
 
+export interface ScheduleDraft {
+    draftId: string;
+    kind: 'schedule';
+    taskType: TaskType;
+    creationMethod: RunnerName | 'manual';
+    createdAt: string;
+    updatedAt: string;
+    guidePath: string | null;
+    transcript: DraftMessage[];
+    specSource: 'new' | 'task';
+    sourceTaskId?: string;
+}
+
 export type CreatedByKind = 'manual' | 'claude' | 'codex' | 'schedule';
 
 export interface CreatedBy {

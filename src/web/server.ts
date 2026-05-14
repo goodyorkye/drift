@@ -39,6 +39,16 @@ import {
     uploadDraftFile,
     writeDraftFile,
 } from '../core/task-drafts.js';
+import {
+    createScheduleDraft,
+    finalizeScheduleDraft,
+    getScheduleCreateOptions,
+    getScheduleDraftSummary,
+    readScheduleDraftFile,
+    sendScheduleDraftMessage,
+    uploadScheduleDraftFile,
+    writeScheduleDraftFile,
+} from '../core/schedule-drafts.js';
 import { PACKAGE_ROOT } from '../paths.js';
 import { FileQueue } from '../queue.js';
 import { listSchedules, readScheduleState } from '../storage.js';
@@ -112,6 +122,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/schedule-create/options') {
+        sendJson(res, 200, await getScheduleCreateOptions());
+        return;
+    }
+
     const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
     if (req.method === 'GET' && taskMatch) {
         sendJson(res, 200, await inspectTaskDetails(taskMatch[1]));
@@ -172,9 +187,42 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return;
     }
 
+    if (req.method === 'POST' && pathname === '/api/drafts/schedules') {
+        assertWebWriteAllowed(options);
+        actorFromHeaders(req.headers);
+        const body = await readJsonBody(req);
+        if (typeof body.type !== 'string') throw new WebHttpError(400, 'Task type is required.');
+        if (body.creationMethod !== 'manual' && body.creationMethod !== 'claude' && body.creationMethod !== 'codex') {
+            throw new WebHttpError(400, 'Creation method is invalid.');
+        }
+        if (body.specSource !== 'new' && body.specSource !== 'task') {
+            throw new WebHttpError(400, 'Schedule spec source is invalid.');
+        }
+        if (body.specSource === 'task' && typeof body.sourceTaskId !== 'string') {
+            throw new WebHttpError(400, 'Source task is required when copying task spec.');
+        }
+        sendJson(
+            res,
+            200,
+            await createScheduleDraft({
+                type: body.type,
+                creationMethod: body.creationMethod,
+                specSource: body.specSource,
+                sourceTaskId: typeof body.sourceTaskId === 'string' ? body.sourceTaskId : undefined,
+            }),
+        );
+        return;
+    }
+
     const draftMatch = pathname.match(/^\/api\/drafts\/tasks\/([^/]+)$/);
     if (req.method === 'GET' && draftMatch) {
         sendJson(res, 200, await getTaskDraftSummary(draftMatch[1]));
+        return;
+    }
+
+    const scheduleDraftMatch = pathname.match(/^\/api\/drafts\/schedules\/([^/]+)$/);
+    if (req.method === 'GET' && scheduleDraftMatch) {
+        sendJson(res, 200, await getScheduleDraftSummary(scheduleDraftMatch[1]));
         return;
     }
 
@@ -195,6 +243,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return;
     }
 
+    const scheduleDraftFileMatch = pathname.match(/^\/api\/drafts\/schedules\/([^/]+)\/files\/content$/);
+    if (req.method === 'GET' && scheduleDraftFileMatch) {
+        const ref = url.searchParams.get('path') ?? 'task.md';
+        sendText(res, 200, await readScheduleDraftFile(scheduleDraftFileMatch[1], ref));
+        return;
+    }
+
+    if (req.method === 'POST' && scheduleDraftFileMatch) {
+        assertWebWriteAllowed(options);
+        actorFromHeaders(req.headers);
+        const body = await readJsonBody(req);
+        if (typeof body.path !== 'string') throw new WebHttpError(400, 'Draft file path is required.');
+        if (typeof body.content !== 'string') throw new WebHttpError(400, 'Draft file content must be a string.');
+        sendJson(res, 200, await writeScheduleDraftFile(scheduleDraftFileMatch[1], body.path, body.content));
+        return;
+    }
+
     const draftUploadMatch = pathname.match(/^\/api\/drafts\/tasks\/([^/]+)\/files\/upload$/);
     if (req.method === 'POST' && draftUploadMatch) {
         assertWebWriteAllowed(options);
@@ -212,6 +277,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return;
     }
 
+    const scheduleDraftUploadMatch = pathname.match(/^\/api\/drafts\/schedules\/([^/]+)\/files\/upload$/);
+    if (req.method === 'POST' && scheduleDraftUploadMatch) {
+        assertWebWriteAllowed(options);
+        actorFromHeaders(req.headers);
+        const body = await readJsonBody(req);
+        if (typeof body.path !== 'string') throw new WebHttpError(400, 'Draft file path is required.');
+        if (typeof body.contentBase64 !== 'string' || body.contentBase64.length === 0) {
+            throw new WebHttpError(400, 'Draft upload content is required.');
+        }
+        sendJson(
+            res,
+            200,
+            await uploadScheduleDraftFile(scheduleDraftUploadMatch[1], body.path, Buffer.from(body.contentBase64, 'base64')),
+        );
+        return;
+    }
+
     const draftSessionMatch = pathname.match(/^\/api\/drafts\/tasks\/([^/]+)\/session$/);
     if (req.method === 'POST' && draftSessionMatch) {
         assertWebWriteAllowed(options);
@@ -221,6 +303,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             throw new WebHttpError(400, 'Draft message is required.');
         }
         sendJson(res, 200, await sendTaskDraftMessage(draftSessionMatch[1], body.message.trim()));
+        return;
+    }
+
+    const scheduleDraftSessionMatch = pathname.match(/^\/api\/drafts\/schedules\/([^/]+)\/session$/);
+    if (req.method === 'POST' && scheduleDraftSessionMatch) {
+        assertWebWriteAllowed(options);
+        actorFromHeaders(req.headers);
+        const body = await readJsonBody(req);
+        if (typeof body.message !== 'string' || body.message.trim().length === 0) {
+            throw new WebHttpError(400, 'Draft message is required.');
+        }
+        sendJson(res, 200, await sendScheduleDraftMessage(scheduleDraftSessionMatch[1], body.message.trim()));
         return;
     }
 
@@ -241,6 +335,33 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
                 maxRetries: parseOptionalInteger(body.maxRetries),
                 timeoutMs: parseOptionalInteger(body.timeoutMs),
                 enqueue: body.enqueue === true,
+                actor,
+            }),
+        );
+        return;
+    }
+
+    const scheduleDraftFinalizeMatch = pathname.match(/^\/api\/drafts\/schedules\/([^/]+)\/finalize$/);
+    if (req.method === 'POST' && scheduleDraftFinalizeMatch) {
+        assertWebWriteAllowed(options);
+        const actor = actorFromHeaders(req.headers);
+        const body = await readJsonBody(req);
+        if (typeof body.scheduleId !== 'string') throw new WebHttpError(400, 'scheduleId is required.');
+        if (typeof body.title !== 'string') throw new WebHttpError(400, 'Schedule title is required.');
+        if (body.runner !== 'claude' && body.runner !== 'codex') throw new WebHttpError(400, 'Runner is invalid.');
+        if (typeof body.cron !== 'string') throw new WebHttpError(400, 'Cron is required.');
+        if (typeof body.skipIfActive !== 'boolean') throw new WebHttpError(400, 'skipIfActive must be a boolean.');
+        if (typeof body.enabled !== 'boolean') throw new WebHttpError(400, 'enabled must be a boolean.');
+        sendJson(
+            res,
+            200,
+            await finalizeScheduleDraft(scheduleDraftFinalizeMatch[1], {
+                scheduleId: body.scheduleId,
+                title: body.title,
+                runner: body.runner as RunnerName,
+                cron: body.cron,
+                skipIfActive: body.skipIfActive,
+                enabled: body.enabled,
                 actor,
             }),
         );

@@ -25,7 +25,7 @@ import {
 import './styles.css';
 
 type Language = 'en' | 'zh';
-type View = 'dashboard' | 'tasks' | 'create-task' | 'queue' | 'schedules' | 'settings';
+type View = 'dashboard' | 'tasks' | 'create-task' | 'create-schedule' | 'queue' | 'schedules' | 'settings';
 type TaskStatus = 'not_queued' | 'pending' | 'running' | 'paused' | 'done' | 'blocked';
 type QueueStatus = Exclude<TaskStatus, 'not_queued'>;
 type DetailTab = 'overview' | 'files' | 'runs' | 'logs';
@@ -155,6 +155,34 @@ interface TaskCreateOptions {
     availableRunners: Array<'claude' | 'codex'>;
 }
 
+interface ScheduleDraftState {
+    draftId: string;
+    kind: 'schedule';
+    taskType: TaskTypeDefinition;
+    creationMethod: 'claude' | 'codex' | 'manual';
+    createdAt: string;
+    updatedAt: string;
+    guidePath: string | null;
+    transcript: DraftMessage[];
+    specSource: 'new' | 'task';
+    sourceTaskId?: string;
+}
+
+interface ScheduleDraftSummary {
+    draft: ScheduleDraftState;
+    files: TaskFileEntry[];
+    taskMd: string;
+}
+
+interface ScheduleCreateOptions {
+    taskTypes: TaskTypeDefinition[];
+    creationMethods: Array<'claude' | 'codex' | 'manual'>;
+    availableCreationMethods: Array<'claude' | 'codex'>;
+    knownRunners: Array<'claude' | 'codex'>;
+    availableRunners: Array<'claude' | 'codex'>;
+    existingTasks: TaskMetadata[];
+}
+
 const queueStatuses: QueueStatus[] = ['pending', 'running', 'paused', 'blocked', 'done'];
 const taskStatuses: Array<TaskStatus | 'all'> = ['all', 'not_queued', 'pending', 'running', 'paused', 'blocked', 'done'];
 
@@ -190,9 +218,15 @@ const messages: Record<Language, Record<string, string>> = {
         artifacts: 'Artifacts',
         download: 'Download',
         newTask: 'New Task',
+        newSchedule: 'New Schedule',
         createTask: 'Create Task',
+        createSchedule: 'Create Schedule',
         taskType: 'Task Type',
         creationMethod: 'Creation Method',
+        specSource: 'Spec Source',
+        sourceNew: 'New spec',
+        sourceTask: 'Copy from task',
+        sourceTaskLabel: 'Source Task',
         createDraft: 'Start draft',
         draftFiles: 'Draft Files',
         saveFile: 'Save file',
@@ -273,6 +307,10 @@ const messages: Record<Language, Record<string, string>> = {
         enabled: 'Enabled',
         disabled: 'Disabled',
         lanNotice: 'LAN access has no authentication. Use trusted networks only.',
+        'create-schedule': 'Create Schedule',
+        scheduleId: 'Schedule ID',
+        cron: 'Cron',
+        skipIfActive: 'Skip if active',
     },
     zh: {
         workspace: '工作区',
@@ -305,9 +343,15 @@ const messages: Record<Language, Record<string, string>> = {
         artifacts: '产物',
         download: '下载',
         newTask: '新建任务',
+        newSchedule: '新建定时任务',
         createTask: '创建任务',
+        createSchedule: '创建定时任务',
         taskType: '任务类型',
         creationMethod: '创建方式',
+        specSource: '材料来源',
+        sourceNew: '新建材料',
+        sourceTask: '从任务复制',
+        sourceTaskLabel: '来源任务',
         createDraft: '开始草稿',
         draftFiles: '草稿文件',
         saveFile: '保存文件',
@@ -388,6 +432,10 @@ const messages: Record<Language, Record<string, string>> = {
         enabled: '已启用',
         disabled: '已停用',
         lanNotice: '局域网访问没有认证，请只在可信网络使用。',
+        'create-schedule': '创建定时任务',
+        scheduleId: '定时任务 ID',
+        cron: 'Cron',
+        skipIfActive: '若已有活动任务则跳过',
     },
 };
 
@@ -429,6 +477,24 @@ function App() {
     const [taskDraftNewFile, setTaskDraftNewFile] = useState('');
     const [taskCreateBusy, setTaskCreateBusy] = useState(false);
     const [taskDraftAssistantBusy, setTaskDraftAssistantBusy] = useState(false);
+    const [scheduleCreateOptions, setScheduleCreateOptions] = useState<ScheduleCreateOptions | null>(null);
+    const [scheduleCreateType, setScheduleCreateType] = useState('');
+    const [scheduleCreateMethod, setScheduleCreateMethod] = useState<'claude' | 'codex' | 'manual'>('manual');
+    const [scheduleSpecSource, setScheduleSpecSource] = useState<'new' | 'task'>('new');
+    const [scheduleSourceTaskId, setScheduleSourceTaskId] = useState('');
+    const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraftSummary | null>(null);
+    const [scheduleDraftFile, setScheduleDraftFile] = useState('task.md');
+    const [scheduleDraftFileText, setScheduleDraftFileText] = useState('');
+    const [scheduleDraftMessage, setScheduleDraftMessage] = useState('');
+    const [scheduleDraftTitle, setScheduleDraftTitle] = useState('');
+    const [scheduleDraftRunner, setScheduleDraftRunner] = useState<'claude' | 'codex'>('claude');
+    const [scheduleDraftScheduleId, setScheduleDraftScheduleId] = useState('');
+    const [scheduleDraftCron, setScheduleDraftCron] = useState('0 * * * *');
+    const [scheduleDraftSkipIfActive, setScheduleDraftSkipIfActive] = useState(true);
+    const [scheduleDraftEnabled, setScheduleDraftEnabled] = useState(true);
+    const [scheduleDraftNewFile, setScheduleDraftNewFile] = useState('');
+    const [scheduleCreateBusy, setScheduleCreateBusy] = useState(false);
+    const [scheduleDraftAssistantBusy, setScheduleDraftAssistantBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const t = useCallback((key: string) => messages[language][key] ?? messages.en[key] ?? key, [language]);
@@ -489,6 +555,22 @@ function App() {
     }, [taskCreateOptions, taskCreateType, taskCreateMethod, taskDraftRunner]);
 
     useEffect(() => {
+        if (!scheduleCreateOptions) return;
+        if (!scheduleCreateType && scheduleCreateOptions.taskTypes[0]) {
+            setScheduleCreateType(scheduleCreateOptions.taskTypes[0].type);
+        }
+        if (!scheduleCreateOptions.creationMethods.includes(scheduleCreateMethod)) {
+            setScheduleCreateMethod(scheduleCreateOptions.creationMethods[0] ?? 'manual');
+        }
+        if (!scheduleCreateOptions.knownRunners.includes(scheduleDraftRunner)) {
+            setScheduleDraftRunner(scheduleCreateOptions.knownRunners[0] ?? 'claude');
+        }
+        if (!scheduleSourceTaskId && scheduleCreateOptions.existingTasks[0]) {
+            setScheduleSourceTaskId(scheduleCreateOptions.existingTasks[0].taskId);
+        }
+    }, [scheduleCreateOptions, scheduleCreateType, scheduleCreateMethod, scheduleDraftRunner, scheduleSourceTaskId]);
+
+    useEffect(() => {
         if (!taskDraft) return;
         const suggested = suggestTitleFromTaskMd(taskDraft.taskMd);
         if (!taskDraftTitle.trim() && suggested) {
@@ -502,6 +584,25 @@ function App() {
         setTaskDraftFile('task.md');
         setTaskDraftFileText(taskDraft.taskMd);
     }, [taskDraft?.draft.draftId]);
+
+    useEffect(() => {
+        if (!scheduleDraft) return;
+        const suggested = suggestTitleFromTaskMd(scheduleDraft.taskMd);
+        const sourceTask =
+            scheduleDraft.draft.sourceTaskId && scheduleCreateOptions
+                ? scheduleCreateOptions.existingTasks.find(task => task.taskId === scheduleDraft.draft.sourceTaskId)
+                : null;
+        if (!scheduleDraftTitle.trim()) {
+            setScheduleDraftTitle(sourceTask?.title ?? suggested);
+        }
+        const nextRunner = (sourceTask?.runner ??
+            scheduleDraft.draft.taskType.defaultRunner ??
+            scheduleCreateOptions?.knownRunners[0] ??
+            'claude') as 'claude' | 'codex';
+        setScheduleDraftRunner(nextRunner);
+        setScheduleDraftFile('task.md');
+        setScheduleDraftFileText(scheduleDraft.taskMd);
+    }, [scheduleDraft?.draft.draftId]);
 
     useEffect(() => {
         if (!selectedTaskId) return;
@@ -646,6 +747,14 @@ function App() {
         }
     }
 
+    async function openScheduleCreate() {
+        setView('create-schedule');
+        setError(null);
+        if (!scheduleCreateOptions) {
+            setScheduleCreateOptions(await api<ScheduleCreateOptions>('/api/schedule-create/options'));
+        }
+    }
+
     async function createTaskDraftWorkspace() {
         if (!validActor || !taskCreateType) return;
         setTaskCreateBusy(true);
@@ -756,6 +865,123 @@ function App() {
         }
     }
 
+    async function createScheduleDraftWorkspace() {
+        if (!validActor || !scheduleCreateType) return;
+        setScheduleCreateBusy(true);
+        try {
+            const summary = await api<ScheduleDraftSummary>('/api/drafts/schedules', {
+                method: 'POST',
+                body: JSON.stringify({
+                    type: scheduleCreateType,
+                    creationMethod: scheduleCreateMethod,
+                    specSource: scheduleSpecSource,
+                    sourceTaskId: scheduleSpecSource === 'task' ? scheduleSourceTaskId : undefined,
+                }),
+                actor,
+            });
+            setScheduleDraft(summary);
+            setScheduleDraftFile('task.md');
+            setScheduleDraftFileText(summary.taskMd);
+            setScheduleDraftMessage('');
+            setScheduleDraftTitle(suggestTitleFromTaskMd(summary.taskMd));
+            setScheduleDraftNewFile('');
+            setError(null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setScheduleCreateBusy(false);
+        }
+    }
+
+    async function loadScheduleDraftFile(ref: string) {
+        if (!scheduleDraft) return;
+        setScheduleDraftFile(ref);
+        try {
+            const text = await apiText(`/api/drafts/schedules/${encodeURIComponent(scheduleDraft.draft.draftId)}/files/content?path=${encodeURIComponent(ref)}`);
+            setScheduleDraftFileText(text);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        }
+    }
+
+    async function saveScheduleDraftFile(ref: string, content: string) {
+        if (!scheduleDraft || !validActor) return;
+        setScheduleCreateBusy(true);
+        try {
+            const summary = await api<ScheduleDraftSummary>(`/api/drafts/schedules/${encodeURIComponent(scheduleDraft.draft.draftId)}/files/content`, {
+                method: 'POST',
+                body: JSON.stringify({ path: ref, content }),
+                actor,
+            });
+            setScheduleDraft(summary);
+            setScheduleDraftFile(ref);
+            setScheduleDraftFileText(content);
+            if (ref === 'task.md') {
+                setScheduleDraftTitle(current => current || suggestTitleFromTaskMd(content));
+            }
+            setError(null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setScheduleCreateBusy(false);
+        }
+    }
+
+    async function sendScheduleDraftPrompt() {
+        if (!scheduleDraft || !validActor || !scheduleDraftMessage.trim()) return;
+        setScheduleCreateBusy(true);
+        setScheduleDraftAssistantBusy(true);
+        try {
+            const result = await api<{ draft: ScheduleDraftSummary; reply: string }>(`/api/drafts/schedules/${encodeURIComponent(scheduleDraft.draft.draftId)}/session`, {
+                method: 'POST',
+                body: JSON.stringify({ message: scheduleDraftMessage.trim() }),
+                actor,
+            });
+            setScheduleDraft(result.draft);
+            if (scheduleDraftFile === 'task.md') {
+                setScheduleDraftFileText(result.draft.taskMd);
+            }
+            setScheduleDraftMessage('');
+            setScheduleDraftTitle(current => current || suggestTitleFromTaskMd(result.draft.taskMd));
+            setError(null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setScheduleCreateBusy(false);
+            setScheduleDraftAssistantBusy(false);
+        }
+    }
+
+    async function finalizeScheduleDraftWorkspace() {
+        if (!scheduleDraft || !validActor) return;
+        setScheduleCreateBusy(true);
+        try {
+            const result = await api<{ schedule: ScheduleItem['schedule']; enabledCoerced: boolean }>(`/api/drafts/schedules/${encodeURIComponent(scheduleDraft.draft.draftId)}/finalize`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    scheduleId: scheduleDraftScheduleId,
+                    title: scheduleDraftTitle,
+                    runner: scheduleDraftRunner,
+                    cron: scheduleDraftCron,
+                    skipIfActive: scheduleDraftSkipIfActive,
+                    enabled: scheduleDraftEnabled,
+                }),
+                actor,
+            });
+            await loadAll();
+            setScheduleDraft(null);
+            setView('schedules');
+            if (result.enabledCoerced) {
+                window.alert(`${t('disabled')}: ${scheduleDraftRunner}`);
+            }
+            setError(null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setScheduleCreateBusy(false);
+        }
+    }
+
     async function addDraftFile() {
         if (!taskDraftNewFile.trim()) return;
         await saveDraftFile(taskDraftNewFile.trim(), '');
@@ -786,6 +1012,39 @@ function App() {
             setError(err instanceof Error ? err.message : String(err));
         } finally {
             setTaskCreateBusy(false);
+        }
+    }
+
+    async function addScheduleDraftFile() {
+        if (!scheduleDraftNewFile.trim()) return;
+        await saveScheduleDraftFile(scheduleDraftNewFile.trim(), '');
+        setScheduleDraftNewFile('');
+    }
+
+    async function uploadScheduleDraftFiles(files: FileList | null) {
+        if (!scheduleDraft || !validActor || !files || files.length === 0) return;
+        setScheduleCreateBusy(true);
+        try {
+            let latestSummary: ScheduleDraftSummary | null = null;
+            for (const file of Array.from(files)) {
+                const buffer = await file.arrayBuffer();
+                latestSummary = await api<ScheduleDraftSummary>(`/api/drafts/schedules/${encodeURIComponent(scheduleDraft.draft.draftId)}/files/upload`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        path: file.name,
+                        contentBase64: arrayBufferToBase64(buffer),
+                    }),
+                    actor,
+                });
+            }
+            if (latestSummary) {
+                setScheduleDraft(latestSummary);
+                setError(null);
+            }
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setScheduleCreateBusy(false);
         }
     }
 
@@ -877,6 +1136,50 @@ function App() {
                 onAddFile={addDraftFile}
                 onUploadFiles={uploadDraftFiles}
             />
+        ) : view === 'create-schedule' ? (
+            <ScheduleCreateView
+                t={t}
+                validActor={validActor}
+                readOnly={readOnly}
+                options={scheduleCreateOptions}
+                selectedType={scheduleCreateType}
+                selectedMethod={scheduleCreateMethod}
+                specSource={scheduleSpecSource}
+                sourceTaskId={scheduleSourceTaskId}
+                draft={scheduleDraft}
+                selectedFile={scheduleDraftFile}
+                fileText={scheduleDraftFileText}
+                message={scheduleDraftMessage}
+                title={scheduleDraftTitle}
+                runner={scheduleDraftRunner}
+                scheduleId={scheduleDraftScheduleId}
+                cron={scheduleDraftCron}
+                skipIfActive={scheduleDraftSkipIfActive}
+                enabled={scheduleDraftEnabled}
+                newFilePath={scheduleDraftNewFile}
+                busy={scheduleCreateBusy}
+                assistantBusy={scheduleDraftAssistantBusy}
+                onType={setScheduleCreateType}
+                onMethod={value => setScheduleCreateMethod(value as 'claude' | 'codex' | 'manual')}
+                onSpecSource={value => setScheduleSpecSource(value as 'new' | 'task')}
+                onSourceTaskId={setScheduleSourceTaskId}
+                onCreateDraft={createScheduleDraftWorkspace}
+                onSelectFile={loadScheduleDraftFile}
+                onFileText={setScheduleDraftFileText}
+                onSaveFile={() => saveScheduleDraftFile(scheduleDraftFile, scheduleDraftFileText)}
+                onMessage={setScheduleDraftMessage}
+                onSendMessage={sendScheduleDraftPrompt}
+                onTitle={setScheduleDraftTitle}
+                onRunner={value => setScheduleDraftRunner(value as 'claude' | 'codex')}
+                onScheduleId={setScheduleDraftScheduleId}
+                onCron={setScheduleDraftCron}
+                onSkipIfActive={setScheduleDraftSkipIfActive}
+                onEnabled={setScheduleDraftEnabled}
+                onFinalize={finalizeScheduleDraftWorkspace}
+                onNewFilePath={setScheduleDraftNewFile}
+                onAddFile={addScheduleDraftFile}
+                onUploadFiles={uploadScheduleDraftFiles}
+            />
         ) : view === 'queue' ? (
             <QueueView t={t} formatDateTime={formatDateTimeLocal} queue={data?.queue} onSelectTask={taskId => { selectTask(taskId, { reveal: true }); setView('tasks'); }} />
         ) : view === 'schedules' ? (
@@ -948,6 +1251,12 @@ function App() {
                                 <button className="primaryButton" onClick={() => openTaskCreate()}>
                                     <PlayCircle size={16} />
                                     {t('newTask')}
+                                </button>
+                            )}
+                            {view === 'schedules' && (
+                                <button className="primaryButton" onClick={() => openScheduleCreate()}>
+                                    <PlayCircle size={16} />
+                                    {t('newSchedule')}
                                 </button>
                             )}
                             <Segmented
@@ -1532,11 +1841,11 @@ function TaskCreateView(props: {
                                 <Segmented value={props.selectedMethod} options={methodOptions} onChange={props.onMethod} fullWidth />
                             </label>
                         </div>
-                            <button
-                                className="primaryButton"
-                                disabled={props.readOnly || !props.validActor || !props.selectedType || props.busy}
-                                onClick={props.onCreateDraft}
-                            >
+                        <button
+                            className="primaryButton formActionButton"
+                            disabled={props.readOnly || !props.validActor || !props.selectedType || props.busy}
+                            onClick={props.onCreateDraft}
+                        >
                                 <PlayCircle size={16} />
                                 {props.t('createDraft')}
                             </button>
@@ -1700,6 +2009,267 @@ function TaskCreateView(props: {
                                 onClick={() => props.onFinalize(true)}
                             >
                                 {props.t('createAndEnqueue')}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function ScheduleCreateView(props: {
+    t: (key: string) => string;
+    validActor: boolean;
+    readOnly: boolean;
+    options: ScheduleCreateOptions | null;
+    selectedType: string;
+    selectedMethod: 'claude' | 'codex' | 'manual';
+    specSource: 'new' | 'task';
+    sourceTaskId: string;
+    draft: ScheduleDraftSummary | null;
+    selectedFile: string;
+    fileText: string;
+    message: string;
+    title: string;
+    runner: 'claude' | 'codex';
+    scheduleId: string;
+    cron: string;
+    skipIfActive: boolean;
+    enabled: boolean;
+    newFilePath: string;
+    busy: boolean;
+    assistantBusy: boolean;
+    onType: (value: string) => void;
+    onMethod: (value: string) => void;
+    onSpecSource: (value: string) => void;
+    onSourceTaskId: (value: string) => void;
+    onCreateDraft: () => void;
+    onSelectFile: (value: string) => void;
+    onFileText: (value: string) => void;
+    onSaveFile: () => void;
+    onMessage: (value: string) => void;
+    onSendMessage: () => void;
+    onTitle: (value: string) => void;
+    onRunner: (value: string) => void;
+    onScheduleId: (value: string) => void;
+    onCron: (value: string) => void;
+    onSkipIfActive: (value: boolean) => void;
+    onEnabled: (value: boolean) => void;
+    onFinalize: () => void;
+    onNewFilePath: (value: string) => void;
+    onAddFile: () => void;
+    onUploadFiles: (files: FileList | null) => void;
+}) {
+    const uploadInputRef = useRef<HTMLInputElement | null>(null);
+    const assistantThreadRef = useRef<HTMLDivElement | null>(null);
+    const typeOptions = props.options?.taskTypes ?? [];
+    const methodOptions =
+        props.options?.creationMethods.map(method => ({
+            value: method,
+            label: method === 'manual' ? props.t('manual') : method,
+        })) ?? [];
+    const sourceTaskOptions = props.options?.existingTasks ?? [];
+    const fileEntries = props.draft?.files.filter(file => file.kind === 'file') ?? [];
+    const transcript = props.draft?.draft.transcript ?? [];
+    const canFinalize = Boolean(props.draft?.taskMd.trim()) && props.title.trim() && props.scheduleId.trim() && props.cron.trim();
+
+    useEffect(() => {
+        const node = assistantThreadRef.current;
+        if (!node) return;
+        node.scrollTop = node.scrollHeight;
+    }, [transcript.length, props.assistantBusy]);
+
+    return (
+        <div className="createTaskLayout">
+            <section className="panel">
+                <PanelTitle icon={<Clock3 />} title={props.t('createSchedule')} />
+                {!props.options ? (
+                    <div className="emptyState">{props.t('loading')}</div>
+                ) : (
+                    <>
+                        <div className="formGrid">
+                            <label className="fieldBlock">
+                                <span>{props.t('taskType')}</span>
+                                <select value={props.selectedType} onChange={event => props.onType(event.target.value)}>
+                                    {typeOptions.map(taskType => (
+                                        <option key={taskType.type} value={taskType.type}>
+                                            {taskType.label ?? taskType.type}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="fieldBlock">
+                                <span>{props.t('creationMethod')}</span>
+                                <Segmented value={props.selectedMethod} options={methodOptions} onChange={props.onMethod} fullWidth />
+                            </label>
+                            <label className="fieldBlock">
+                                <span>{props.t('specSource')}</span>
+                                <Segmented
+                                    value={props.specSource}
+                                    options={[
+                                        { value: 'new', label: props.t('sourceNew') },
+                                        { value: 'task', label: props.t('sourceTask') },
+                                    ]}
+                                    onChange={props.onSpecSource}
+                                    fullWidth
+                                />
+                            </label>
+                            {props.specSource === 'task' && (
+                                <label className="fieldBlock">
+                                    <span>{props.t('sourceTaskLabel')}</span>
+                                    <select value={props.sourceTaskId} onChange={event => props.onSourceTaskId(event.target.value)}>
+                                        {sourceTaskOptions.map(task => (
+                                            <option key={task.taskId} value={task.taskId}>
+                                                {task.title} · {task.taskId}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                            )}
+                        </div>
+                        <button
+                            className="primaryButton formActionButton"
+                            disabled={
+                                props.readOnly ||
+                                !props.validActor ||
+                                !props.selectedType ||
+                                props.busy ||
+                                (props.specSource === 'task' && !props.sourceTaskId)
+                            }
+                            onClick={props.onCreateDraft}
+                        >
+                            <PlayCircle size={16} />
+                            {props.t('createDraft')}
+                        </button>
+                    </>
+                )}
+            </section>
+
+            {props.draft && (
+                <div className={`createWorkbench ${props.draft.draft.creationMethod === 'manual' ? 'manualMode' : ''}`}>
+                    <section className="panel flush">
+                        <PanelTitle icon={<ListChecks />} title={props.t('draftFiles')} />
+                        <div className="draftFileTools">
+                            <input value={props.newFilePath} placeholder={props.t('newFilePath')} onChange={event => props.onNewFilePath(event.target.value)} />
+                            <input
+                                ref={uploadInputRef}
+                                className="hiddenFileInput"
+                                type="file"
+                                multiple
+                                onChange={event => {
+                                    props.onUploadFiles(event.target.files);
+                                    event.currentTarget.value = '';
+                                }}
+                            />
+                            <div className="draftFileActions">
+                                <button className="primaryButton" disabled={props.readOnly || !props.validActor || props.busy} onClick={props.onAddFile}>
+                                    <FilePlus2 size={16} />
+                                    {props.t('createEmptyFile')}
+                                </button>
+                                <button
+                                    className="primaryButton secondaryButton"
+                                    disabled={props.readOnly || !props.validActor || props.busy}
+                                    onClick={() => uploadInputRef.current?.click()}
+                                >
+                                    <Upload size={16} />
+                                    {props.busy ? props.t('uploading') : props.t('uploadFile')}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="fileRows">
+                            {fileEntries.map(file => (
+                                <button key={file.path} className={props.selectedFile === file.path ? 'active' : ''} onClick={() => props.onSelectFile(file.path)}>
+                                    <span>{file.path}</span>
+                                    <small>{file.size}b</small>
+                                </button>
+                            ))}
+                        </div>
+                    </section>
+                    <section className="panel flush">
+                        <div className="panelHeader">
+                            <PanelTitle icon={<TerminalSquare />} title={props.selectedFile} />
+                            <button className="primaryButton" disabled={props.readOnly || !props.validActor || props.busy} onClick={props.onSaveFile}>
+                                {props.t('saveFile')}
+                            </button>
+                        </div>
+                        <textarea className="draftEditor" value={props.fileText} onChange={event => props.onFileText(event.target.value)} spellCheck={false} />
+                    </section>
+                    {props.draft.draft.creationMethod !== 'manual' && (
+                        <section className="panel flush">
+                            <PanelTitle icon={<UserRound />} title={props.t('assistant')} />
+                            <div className="assistantThread" ref={assistantThreadRef}>
+                                {transcript.length === 0 && <div className="emptyState compactEmpty">{props.t('empty')}</div>}
+                                {transcript.map((message, index) => (
+                                    <div key={`${message.role}-${index}`} className={`assistantBubble ${message.role}`}>
+                                        <strong>{message.role === 'user' ? 'You' : 'AI'}</strong>
+                                        <pre>{normalizeDisplayText(message.content)}</pre>
+                                    </div>
+                                ))}
+                                {props.assistantBusy && (
+                                    <div className="assistantBubble assistantPending">
+                                        <strong>AI</strong>
+                                        <div className="assistantPendingLine">
+                                            <span className="loadingDot" />
+                                            <span>{props.t('assistantWorking')}</span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="assistantComposer">
+                                <textarea
+                                    value={props.message}
+                                    placeholder={props.t('assistantPlaceholder')}
+                                    onChange={event => props.onMessage(event.target.value)}
+                                    disabled={props.assistantBusy}
+                                />
+                                <button
+                                    className="primaryButton"
+                                    disabled={props.readOnly || !props.validActor || props.busy || props.assistantBusy || props.message.trim().length === 0}
+                                    onClick={props.onSendMessage}
+                                >
+                                    {props.assistantBusy ? props.t('assistantWorking') : props.t('send')}
+                                </button>
+                            </div>
+                        </section>
+                    )}
+                    <section className="panel flush wide">
+                        <PanelTitle icon={<Clock3 />} title={props.t('createSchedule')} />
+                        <div className="formGrid">
+                            <label className="fieldBlock">
+                                <span>Title</span>
+                                <input value={props.title} onChange={event => props.onTitle(event.target.value)} />
+                            </label>
+                            <label className="fieldBlock">
+                                <span>{props.t('scheduleId')}</span>
+                                <input value={props.scheduleId} onChange={event => props.onScheduleId(event.target.value)} />
+                            </label>
+                            <label className="fieldBlock">
+                                <span>{props.t('runner')}</span>
+                                <select value={props.runner} onChange={event => props.onRunner(event.target.value)}>
+                                    {(props.options?.knownRunners ?? ['claude', 'codex']).map(runner => (
+                                        <option key={runner} value={runner}>
+                                            {runner}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="fieldBlock">
+                                <span>{props.t('cron')}</span>
+                                <input value={props.cron} onChange={event => props.onCron(event.target.value)} />
+                            </label>
+                            <label className="switchField">
+                                <span>{props.t('skipIfActive')}</span>
+                                <input type="checkbox" checked={props.skipIfActive} onChange={event => props.onSkipIfActive(event.target.checked)} />
+                            </label>
+                            <label className="switchField">
+                                <span>{props.t('enabled')}</span>
+                                <input type="checkbox" checked={props.enabled} onChange={event => props.onEnabled(event.target.checked)} />
+                            </label>
+                        </div>
+                        <div className="actionRow">
+                            <button className="primaryButton" disabled={props.readOnly || !props.validActor || props.busy || !canFinalize} onClick={props.onFinalize}>
+                                {props.t('createSchedule')}
                             </button>
                         </div>
                     </section>

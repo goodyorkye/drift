@@ -153,8 +153,11 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .mutedText { color: var(--muted); }
 .errorText { margin: 4px 0 0; color: var(--bad); font-size: 13px; }
 .formGrid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+.formActionButton { margin-top: 12px; }
 .fieldBlock { display: grid; gap: 6px; min-width: 0; }
 .fieldBlock span { color: var(--muted); font-size: 12px; }
+.switchField { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.switchField span { color: var(--muted); font-size: 12px; }
 .fieldBlock input, .fieldBlock select, .draftFileTools input, .assistantComposer textarea, .draftEditor {
     width: 100%;
     border: 1px solid var(--line);

@@ -4,12 +4,16 @@ import {
     DRAFTS_DIR,
     LOGS_DIR,
     SCHEDULES_DIR,
+    SCHEDULE_DRAFTS_DIR,
     TASKS_DIR,
     TASK_DRAFTS_DIR,
     QUEUE_DIR,
     queueStatusDir,
     queueTicketFile,
     scheduleFile,
+    scheduleDraftMetaFile,
+    scheduleDraftRoot,
+    scheduleDraftSpecDir,
     scheduleRoot,
     scheduleSharedStateDir,
     scheduleSpecDir,
@@ -27,6 +31,7 @@ import {
 } from './paths.js';
 import {
     type AgentResult,
+    type ScheduleDraft,
     type TaskDraft,
     type QueueStatus,
     type QueueTicket,
@@ -45,6 +50,7 @@ export async function ensureWorkspaceDirs(): Promise<void> {
     await fs.mkdir(QUEUE_DIR, { recursive: true });
     await fs.mkdir(DRAFTS_DIR, { recursive: true });
     await fs.mkdir(TASK_DRAFTS_DIR, { recursive: true });
+    await fs.mkdir(SCHEDULE_DRAFTS_DIR, { recursive: true });
     await Promise.all(QUEUE_STATUSES.map(status => fs.mkdir(queueStatusDir(status), { recursive: true })));
 }
 
@@ -68,6 +74,15 @@ export async function ensureTaskDraftRoot(draftId: string): Promise<void> {
 export async function ensureTaskDraftSpec(draftId: string): Promise<void> {
     await ensureTaskDraftRoot(draftId);
     await fs.mkdir(taskDraftSpecDir(draftId), { recursive: true });
+}
+
+export async function ensureScheduleDraftRoot(draftId: string): Promise<void> {
+    await fs.mkdir(scheduleDraftRoot(draftId), { recursive: true });
+}
+
+export async function ensureScheduleDraftSpec(draftId: string): Promise<void> {
+    await ensureScheduleDraftRoot(draftId);
+    await fs.mkdir(scheduleDraftSpecDir(draftId), { recursive: true });
 }
 
 export async function ensureTaskSpec(taskId: string): Promise<void> {
@@ -112,6 +127,15 @@ export async function readTaskDraft(draftId: string): Promise<TaskDraft> {
     return readJson<TaskDraft>(taskDraftMetaFile(draftId));
 }
 
+export async function writeScheduleDraft(draft: ScheduleDraft): Promise<void> {
+    await ensureScheduleDraftRoot(draft.draftId);
+    await writeJson(scheduleDraftMetaFile(draft.draftId), draft);
+}
+
+export async function readScheduleDraft(draftId: string): Promise<ScheduleDraft> {
+    return readJson<ScheduleDraft>(scheduleDraftMetaFile(draftId));
+}
+
 export async function listTasks(): Promise<TaskMetadata[]> {
     const entries = await fs.readdir(TASKS_DIR, { withFileTypes: true }).catch(() => []);
     const tasks = await Promise.all(
@@ -132,6 +156,10 @@ export async function removeTaskRoot(taskId: string): Promise<void> {
 
 export async function removeTaskDraftRoot(draftId: string): Promise<void> {
     await fs.rm(taskDraftRoot(draftId), { recursive: true, force: true });
+}
+
+export async function removeScheduleDraftRoot(draftId: string): Promise<void> {
+    await fs.rm(scheduleDraftRoot(draftId), { recursive: true, force: true });
 }
 
 export async function initializeWorkdir(taskId: string): Promise<void> {

@@ -225,6 +225,7 @@ POST /api/drafts/:draftId/finalize-schedule
 - 增加 `Copy from existing task`
 - 增加 schedule 参数确认页
 - 最终创建 schedule 与 `schedule-state.json`
+- 当前实现中，这个阶段已经落地为基础版：支持 `new` 和 `task` 两种 spec 来源，支持 `manual`、`claude`、`codex` 三种创建方式，并在 Web 里完成最终 schedule 创建
 
 ## 非目标
 

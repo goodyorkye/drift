@@ -8,6 +8,7 @@
 - Added `drift web` options for LAN access and read-only mode.
 - Added Web task management actions for enqueue, cancel, stop, resume, rerun, abandon, remove, and history cleanup.
 - Added Task Create Assistant in the Web UI with draft directories, assistant rounds, manual editing, and file upload support.
+- Added Schedule Create Assistant in the Web UI, including draft creation, task-spec copying, assistant rounds, and final schedule setup.
 - Added the built-in `general` task type as the default creation type.
 
 ### Changed
@@ -18,5 +19,4 @@
 
 ### Notes
 
-- Web creation currently covers **Task** creation only. `Schedule Create Assistant` remains a follow-up phase.
 - `drift web` remains a local control surface; it does not replace `drift start` for orchestrator / scheduler execution.
